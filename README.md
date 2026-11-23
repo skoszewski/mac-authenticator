@@ -35,6 +35,13 @@ The icon is changed in Icon Composer (Xcode > Open Developer Tool > Icon Compose
 are kept as flat SVG files in `Resources/AppIconLayers`, whose README holds the settings the
 icon was composed with.
 
+`tools/make-windows-icon.swift` draws the icon of Windows Authenticator into that repository,
+whose path it is given:
+
+```sh
+swift tools/make-windows-icon.swift <windows-authenticator>/src/WindowsAuthenticator/Resources/AppIcon.ico
+```
+
 `make test` runs `swift test`: the tests in `Tests/TOTPTests` compare the codes with the test
 vectors of RFC 6238 Appendix B for SHA-1, SHA-256 and SHA-512 and with codes printed by
 `otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs.
@@ -119,3 +126,8 @@ that cannot be read is reported in the code window instead of the code.
 
 When the items cannot be listed, the menu shows why and a **Retry** item, and refuses changes
 until they have been listed.
+
+## Sibling project
+
+Windows Authenticator, the Windows version of this app:
+<https://github.com/skoszewski/windows-authenticator>.
