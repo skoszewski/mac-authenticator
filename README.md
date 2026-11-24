@@ -27,6 +27,22 @@ make build      # build the executable alone
 make clean      # remove the build products and dist/
 ```
 
+## Signing
+
+The bundle is signed ad hoc by default. `SIGN_IDENTITY` names another code signing identity, by
+its name or its SHA-1 hash as `security find-identity -v -p codesigning` lists them:
+
+```sh
+make SIGN_IDENTITY=<identity>
+```
+
+An identity can be kept in the untracked `Makefile.local`, which `make` reads, as the line
+`SIGN_IDENTITY = <identity>`. The command line wins over the file. A stable identity, such as an
+Apple Development certificate of a free Personal Team or one issued by an own CA that the Mac
+trusts for code signing, keeps the access granted to the app in the keychain across rebuilds. An
+ad hoc signature changes with every build, and the keychain asks again. The first signing may ask
+for access to the identity's private key.
+
 ## The app icon
 
 The app icon, a shield with a keyhole inside a countdown ring, is `Resources/AppIcon.icon`, an

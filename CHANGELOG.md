@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1-2 - 2026-11-24 10:49:55 +0100
+
+feat: make signs the app with the identity of SIGN_IDENTITY or of the untracked Makefile.local.
+
+- The code signing identity comes from the command line or from Makefile.local, and the app is
+  signed ad hoc without either. A stable identity, such as an Apple Development certificate,
+  keeps the access of the app to the keychain across rebuilds.
+- The README describes signing.
+
 ## 0.3.1 - 2026-11-24 08:02:16 +0100
 
 fix: the app made by make opens in Finder, the Accounts list shows where each account is stored,

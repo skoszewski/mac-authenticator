@@ -10,15 +10,17 @@
 #
 # The bundle's version is that of the newest entry of CHANGELOG.md, read by tools/version.py.
 #
-# SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. The active developer
-# directory must be Xcode's, whose actool compiles Resources/AppIcon.icon.
+# SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. It is set in the
+# command line, or in the untracked Makefile.local. The active developer directory must be
+# Xcode's, whose actool compiles Resources/AppIcon.icon.
 
 PYTHON = python3
 VERSION := $(shell $(PYTHON) tools/version.py)
 ifeq ($(VERSION),)
 $(error tools/version.py found no version in CHANGELOG.md)
 endif
-SIGN_IDENTITY = -
+-include Makefile.local
+SIGN_IDENTITY ?= -
 APP = dist/Mac Authenticator.app
 STAGE = .build/stage/Mac Authenticator.app
 

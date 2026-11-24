@@ -3,3 +3,4 @@
 /dist/
 /.vault-data
 vault.secret
+Makefile.local

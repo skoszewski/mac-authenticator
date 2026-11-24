@@ -86,7 +86,9 @@ SwiftPM builds the executable but not an app bundle. The Makefile copies the exe
 `Resources/Info.plist` into `dist/Mac Authenticator.app`, writes `VERSION` into the copy with
 `plutil`, and signs the bundle with `SIGN_IDENTITY`, ad hoc by default, which needs no Apple
 Developer Program membership. The keychain item's access follows the signature, so a stable
-identity spares the question macOS asks after an ad-hoc rebuild.
+identity spares the question macOS asks after an ad-hoc rebuild. The identity of the developer's
+machine is read from the untracked `Makefile.local`, so a checkout builds ad hoc by default and
+no identity is committed; the command line overrides both.
 
 The bundle is assembled and signed in `.build/stage` and moved into `dist` whole. Assembled in
 place, it would exist for the seconds the icon compiler takes without its `Info.plist`, which
