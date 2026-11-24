@@ -2,25 +2,42 @@ import AppKit
 import Observation
 import ServiceManagement
 import TOTP
+import Vault
 
 /// Why the account list was not changed.
 enum StoreError: LocalizedError {
     case duplicateName(String)
+    case duplicateProfileName(String)
+    case missingProfileName
+    case profileRemoved
     case notLoaded
 
     var errorDescription: String? {
         switch self {
         case let .duplicateName(name):
             return "An account named \(name) exists already."
+        case let .duplicateProfileName(name):
+            return "A vault named \(name) exists already."
+        case .missingProfileName:
+            return "Give the vault a name."
+        case .profileRemoved:
+            return "The vault of this account was removed."
         case .notLoaded:
             return "The accounts were not read from the keychain, so they are not changed."
         }
     }
 }
 
-/// An account whose codes Vault makes: the account's parameters and the name of its key.
+/// The profile and the name of the key an account whose codes Vault makes is read from.
+struct VaultKey: Equatable {
+    var profile: UUID
+    var key: String
+}
+
+/// An account whose codes Vault makes: the account's parameters, its profile and the name of its key.
 private struct VaultRecord: Codable {
     var id: UUID
+    var profile: UUID
     var name: String
     var issuer: String?
     var parameters: String
@@ -40,11 +57,12 @@ private struct VaultCode {
 @Observable
 final class AccountStore {
     private(set) var accounts: [Account] = []
-    let vault = VaultSession()
-    /// The Vault key of each account whose codes Vault makes.
-    private(set) var vaultKeys: [UUID: String] = [:]
+    /// The sessions of the Vault profiles, in the order the profiles were created.
+    private(set) var vaults: [VaultSession] = []
+    /// The Vault key and profile of each account whose codes Vault makes.
+    private(set) var vaultKeys: [UUID: VaultKey] = [:]
     private var vaultCodes: [UUID: VaultCode] = [:]
-    @ObservationIgnored private var vaultRecords: [VaultRecord] = UserDefaults.standard.data(forKey: "vaultAccounts")
+    @ObservationIgnored private var vaultRecords: [VaultRecord] = UserDefaults.standard.data(forKey: "vaultProfileAccounts")
         .flatMap { try? JSONDecoder().decode([VaultRecord].self, from: $0) } ?? []
     /// The accounts being fetched, and the period count of the last failed fetch of each.
     @ObservationIgnored private var vaultFetching: Set<UUID> = []
@@ -76,6 +94,9 @@ final class AccountStore {
     }
 
     init() {
+        UserDefaults.standard.removeObject(forKey: "vault")
+        UserDefaults.standard.removeObject(forKey: "vaultAccounts")
+        Keychain.deleteLegacyVaultCredential()
         reload()
         let start = Date(timeIntervalSince1970: ceil(Date().timeIntervalSince1970))
         let timer = Timer(fire: start, interval: 1, repeats: true) { [weak self] _ in
@@ -88,16 +109,26 @@ final class AccountStore {
         self.timer = timer
     }
 
-    /// Lists the accounts from the keychain again, in the stored menu order; accounts missing
-    /// from the order follow by the creation of their items.
+    /// Lists the Vault profiles and the accounts from the keychain again, in the stored menu order;
+    /// accounts missing from the order follow by the creation of their items. The session of a
+    /// profile that is still there is kept, with its token.
     func reload() {
         do {
+            vaults = try Keychain.vaultProfiles().map { profile in
+                guard let session = vaults.first(where: { $0.profile.id == profile.id }) else {
+                    return VaultSession(profile: profile)
+                }
+                if session.profile != profile {
+                    session.update(profile)
+                }
+                return session
+            }
             let order = UserDefaults.standard.stringArray(forKey: "accountOrder") ?? []
             let vaultListed = vaultRecords.compactMap { record in
                 (try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters))
                     .map { Keychain.Listed(account: $0, created: record.added) }
             }
-            vaultKeys = Dictionary(uniqueKeysWithValues: vaultRecords.map { ($0.id, $0.key) })
+            vaultKeys = Dictionary(uniqueKeysWithValues: vaultRecords.map { ($0.id, VaultKey(profile: $0.profile, key: $0.key)) })
             let listed = try Keychain.accounts() + vaultListed
             accounts = listed.sorted { first, second in
                 let firstIndex = order.firstIndex(of: first.account.id.uuidString) ?? Int.max
@@ -121,15 +152,81 @@ final class AccountStore {
         saveOrder()
     }
 
-    /// Adds an account whose codes Vault makes from the key; nothing secret is kept for it.
-    func addVaultAccount(_ account: Account, key: String) throws {
+    /// Adds an account whose codes the Vault profile makes from the key; nothing secret is kept
+    /// for it.
+    func addVaultAccount(_ account: Account, key: String, profile: UUID) throws {
         try checkCanAdd(named: account.name)
-        vaultRecords.append(VaultRecord(id: account.id, name: account.name, issuer: account.issuer,
+        vaultRecords.append(VaultRecord(id: account.id, profile: profile, name: account.name, issuer: account.issuer,
                                         parameters: account.parameters, key: key, added: Date()))
         saveVaultRecords()
-        vaultKeys[account.id] = key
+        vaultKeys[account.id] = VaultKey(profile: profile, key: key)
         accounts.append(account)
         saveOrder()
+    }
+
+    /// The session of the Vault profile, or nil when it is gone.
+    func vault(for profile: UUID) -> VaultSession? {
+        vaults.first { $0.profile.id == profile }
+    }
+
+    /// Refuses an empty name, and one another profile has.
+    private func checkProfileName(_ name: String, excluding id: UUID?) throws {
+        guard !name.isEmpty else {
+            throw StoreError.missingProfileName
+        }
+        if vaults.contains(where: { $0.profile.id != id && $0.profile.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            throw StoreError.duplicateProfileName(name)
+        }
+    }
+
+    /// Adds the profile's keychain item, with its credential, and its session. An OIDC profile
+    /// keeps no credential.
+    func addVaultProfile(name: String, configuration: VaultConfiguration, credential: String) throws -> VaultSession {
+        guard loadError == nil else {
+            throw StoreError.notLoaded
+        }
+        try checkProfileName(name, excluding: nil)
+        let profile = VaultProfile(id: UUID(), name: name, configuration: configuration)
+        try Keychain.addVaultProfile(profile, credential: configuration.authMethod == .oidc ? "" : credential)
+        reload()
+        return vault(for: profile.id) ?? VaultSession(profile: profile)
+    }
+
+    /// Replaces the profile's name and settings, and its credential when one is given; an OIDC
+    /// profile's credential is deleted. The session signs out.
+    func updateVaultProfile(_ session: VaultSession, name: String, configuration: VaultConfiguration,
+                            credential: String?) throws {
+        guard loadError == nil else {
+            throw StoreError.notLoaded
+        }
+        try checkProfileName(name, excluding: session.profile.id)
+        let profile = VaultProfile(id: session.profile.id, name: name, configuration: configuration)
+        try Keychain.updateVaultProfile(profile, credential: configuration.authMethod == .oidc ? "" : credential)
+        session.update(profile)
+        vaultConnectionChanged()
+        reload()
+    }
+
+    /// The accounts whose codes the Vault profile makes.
+    func accounts(of profile: UUID) -> [Account] {
+        accounts.filter { vaultKeys[$0.id]?.profile == profile }
+    }
+
+    /// Deletes the profile's keychain item and its accounts; their keys stay in Vault.
+    func removeVaultProfile(_ session: VaultSession) throws {
+        guard loadError == nil else {
+            throw StoreError.notLoaded
+        }
+        let id = session.profile.id
+        try Keychain.deleteVaultProfile(id)
+        session.signOut()
+        vaultRecords.removeAll { $0.profile == id }
+        saveVaultRecords()
+        reload()
+        if let shown = menuBarAccountID, !accounts.contains(where: { $0.id == shown }) {
+            menuBarAccountID = nil
+        }
+        openWindowIDs.formIntersection(accounts.map(\.id))
     }
 
     /// Refuses a change while the keychain is not listed, and a name an account has already.
@@ -201,8 +298,12 @@ final class AccountStore {
     /// is read and not kept, or one fetched from Vault.
     func copyCode(of account: Account) async throws {
         let code: String
-        if let key = vaultKeys[account.id] {
-            code = try await vault.authorized { try await $0.code(key: key) }
+        if let vaultKey = vaultKeys[account.id] {
+            guard let session = vault(for: vaultKey.profile) else {
+                throw StoreError.profileRemoved
+            }
+            let key = vaultKey.key
+            code = try await session.authorized { try await $0.code(key: key) }
         } else {
             let secret = try secrets[account.id] ?? Keychain.secret(of: account.id)
             code = account.code(secret: secret, at: Date())
@@ -216,9 +317,16 @@ final class AccountStore {
     /// failed fetch is not repeated within its period.
     private func refreshVaultCodes() {
         for account in accounts where shownIDs.contains(account.id) {
-            guard let key = vaultKeys[account.id] else {
+            guard let vaultKey = vaultKeys[account.id] else {
                 continue
             }
+            guard let session = vault(for: vaultKey.profile) else {
+                if secretErrors[account.id] != StoreError.profileRemoved.localizedDescription {
+                    secretErrors[account.id] = StoreError.profileRemoved.localizedDescription
+                }
+                continue
+            }
+            let key = vaultKey.key
             let counter = counter(of: account, at: now)
             guard vaultCodes[account.id]?.counter != counter, vaultFailures[account.id] != counter,
                   vaultFetching.insert(account.id).inserted else {
@@ -230,7 +338,7 @@ final class AccountStore {
                     vaultFetching.remove(id)
                 }
                 do {
-                    let code = try await vault.authorized { try await $0.code(key: key) }
+                    let code = try await session.authorized { try await $0.code(key: key) }
                     vaultCodes[id] = VaultCode(code: code, counter: counter)
                     secretErrors[id] = nil
                 } catch {
@@ -249,16 +357,16 @@ final class AccountStore {
         refreshVaultCodes()
     }
 
-    /// Signs in to Vault, so the shown codes are fetched.
-    func signInToVault() async throws {
+    /// Signs in to the Vault profile, so the shown codes are fetched.
+    func signInToVault(_ session: VaultSession) async throws {
         defer {
             vaultConnectionChanged()
         }
-        try await vault.signIn()
+        try await session.signIn()
     }
 
-    func signOutOfVault() {
-        vault.signOut()
+    func signOutOfVault(_ session: VaultSession) {
+        session.signOut()
         vaultConnectionChanged()
     }
 
@@ -300,7 +408,7 @@ final class AccountStore {
     }
 
     private func saveVaultRecords() {
-        UserDefaults.standard.set(try? JSONEncoder().encode(vaultRecords), forKey: "vaultAccounts")
+        UserDefaults.standard.set(try? JSONEncoder().encode(vaultRecords), forKey: "vaultProfileAccounts")
     }
 
     private func saveOrder() {

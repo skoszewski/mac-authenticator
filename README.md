@@ -78,21 +78,39 @@ open "$HOME/Applications/Mac Authenticator.app"
   - **Show in Menu Bar** shows the account's code beside the menu bar icon, ticked for the
     account shown; ticking another account moves the code to it, unticking hides it. The
     choice is kept across launches;
-  - **Remove** asks before the account and its secret are deleted, and closes its window;
-- **Add Account...** asks for a name and a secret or an otpauth URI;
-- **Add Account from QR Code in Clipboard** reads the QR code in the image in the clipboard and
-  opens the same dialog with its URI filled in;
-- **Vault** holds the HashiCorp Vault connection:
-  - the state of the sign-in;
-  - **Sign In to Vault** and **Sign Out of Vault**;
-  - **Add Vault Key...** adds an account whose codes Vault makes;
-  - **Generate Vault Key...** has Vault make a key, shows its QR code, and adds the account;
-  - **Import Vault Key...** stores an existing secret in Vault, and adds the account;
-  - **Vault Settings...**;
+- **Settings...** (Command-comma) opens the Settings window;
 - **Launch at Login** registers the app as a login item, which macOS may ask to approve in
   System Settings > General > Login Items;
 - **About Mac Authenticator** shows the app's version;
 - **Quit Mac Authenticator** (Command-Q).
+
+## Settings
+
+The Settings window has two tabs, each a list on the left with **+** and **-** buttons under
+it, and the details of the selected item on the right.
+
+**Accounts** lists all the accounts, whichever place keeps the secret, the keychain or a vault,
+with the name of that place. The details show the account's name, issuer, place and parameters,
+and hold **Show in menu bar**, **Show Window** and **Copy Code**.
+
+- **+** opens a menu of the ways to add an account:
+  - **Account...** asks for a name and a secret or an otpauth URI;
+  - **From QR Code in Clipboard** reads the QR code in the image in the clipboard and opens the
+    same dialog with its URI filled in;
+  - **From Vault...** asks for a vault and one of the keys of its TOTP engine, and adds the
+    account the key stores;
+  - **Generate in Vault...** has a vault make the secret of a new account, keeps it in a key and
+    adds the account;
+  - **Import to Vault...** stores the secret of an existing account in a key of a vault and adds
+    the account;
+- **-** asks before the selected account and its secret are deleted, and closes its window.
+
+**Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
+of each sign-in. **+** adds a vault and **-** removes the selected one. For the selected vault the
+page holds its settings and sign-in, with the sign-in state, **Sign In** and **Sign Out**, and
+**Save** and **Revert** at the bottom. Sign In and Sign Out are enabled for an OIDC vault alone,
+since the other methods sign in when a code is needed; an OIDC vault is signed in here, after
+each launch.
 
 ## Adding an account
 
@@ -145,14 +163,16 @@ until they have been listed.
 ## HashiCorp Vault
 
 An account can take its codes from the TOTP secrets engine of a Vault server, which then holds
-the secret and the app never sees it. The app has one Vault connection, with any number of
-keys. A Vault account looks and works like any other: it has a window, can be shown beside the
-menu bar icon and can be copied; its code is fetched from Vault once for each period.
+the secret and the app never sees it. The app has any number of Vault profiles, each a
+connection to one server with its own sign-in, and any number of keys of each. A Vault account
+looks and works like any other: it has a window, can be shown beside the menu bar icon and can
+be copied; its code is fetched from Vault once for each period.
 
-### The settings
+### The profiles
 
-**Vault Settings...** asks for:
+The Vaults tab of the Settings window asks for:
 
+- the name of the vault, which must be unique;
 - the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for
   local addresses alone;
 - the namespace, for Vault Enterprise;
@@ -167,27 +187,34 @@ menu bar icon and can be copied; its code is fetched from Vault once for each pe
     user in. The token lives in memory, so the sign-in is repeated after each launch and when
     the token ends.
 
-An empty credential field keeps the credential stored before. The keychain holds one credential
-at most, as one generic password item of the service `pl.waw.koszewscy.MacAuthenticator.vault`.
-The other settings, and the accounts taken from Vault, are in the app's user defaults.
+An empty credential field keeps the credential stored before. A profile is one generic password
+item of the service `pl.waw.koszewscy.MacAuthenticator.vault`, labelled with the profile name:
+its attributes hold the settings and its data holds the credential, empty for OIDC. The
+accounts taken from Vault are in the app's user defaults, each with its profile and key.
+Removing a profile deletes its item and its accounts; the keys stay in Vault.
+
+Profiles are signed in independently, so accounts of several servers show codes at once. Two
+OIDC profiles with the same callback port cannot sign in at the same moment; give them
+different ports.
 
 With a token, password or AppRole the app signs in when a code is needed, and again when Vault
 refuses the token; a renewable token is renewed when half of its lease has passed. A code that
 cannot be fetched is reported in the code window in place of the code.
 
-### Adding keys
+### Adding accounts from a vault
 
-**Add Vault Key...** lists the keys of the engine, to pick from, and reads the key's algorithm,
-digits, period and issuer once, so the window can count the seconds. A key can be typed when
-the policy does not allow listing. The name is the one typed, or `<issuer>: <account name>`
-from the key. Removing the account does not touch the key in Vault.
+A vault stores an account in a key of its TOTP engine. **From Vault...** in the **+** menu of the Accounts
+tab asks for the vault and lists its keys, to pick from; the key's algorithm, digits, period and
+issuer are read once, so the window can count the seconds. A key can be typed when the policy
+does not allow listing. The account is named as typed, or `<issuer>: <account name>` from the
+key. Removing the account does not touch the key in the vault.
 
-**Generate Vault Key...** asks for a key name, an issuer and an account name, and has Vault make
-the secret. Vault shows the secret once, as a QR code and an `otpauth://` URL; scan the code
-into another authenticator, or copy the URL, before choosing Done. **Import Vault Key...** asks
-for a key name and a base32 secret or an `otpauth://totp/` URI; Vault keeps SHA1, SHA256 and
-SHA512 keys of 6 or 8 digits, and other keys are refused. Neither replaces a key that exists:
-the name must be new. Both add the account to the app, as **Add Vault Key...** does.
+**Generate in Vault...** in the **+** menu of the Accounts tab asks for a vault, a key name, an issuer and an account
+name, and has the vault make the secret. The vault shows the secret once, as a QR code and an `otpauth://`
+URL; scan the code into another authenticator, or copy the URL, before choosing Done.
+**Import to Vault...** asks for a vault, a key name and a base32 secret or an `otpauth://totp/` URI; Vault
+keeps SHA1, SHA256 and SHA512 keys of 6 or 8 digits, and other keys are refused. Neither
+replaces a key that exists: the name must be new. Both add the account to the app.
 
 ### What the Vault administrator prepares
 
@@ -205,6 +232,22 @@ the name must be new. Both add the account to the app, as **Add Vault Key...** d
 - for OIDC, a role of the JWT/OIDC method whose `allowed_redirect_uris` holds
   `http://localhost:8250/oidc/callback`, with the port of the settings, and the same URI
   registered with the identity provider.
+
+## Releasing
+
+`release.py` releases the newest entry of `CHANGELOG.md`, which `bin/changelog.py` reads:
+
+- `./release.py` writes the release time into the entry's heading, and commits everything with
+  the summary of the entry as the message;
+- `./release.py --push` also tags the entry's version and pushes `main` and the tag;
+- `./release.py --no-tag` makes an internal release: with `--push`, `main` is pushed without a
+  tag;
+- `./release.py -n` prints the heading and the git commands instead of making them.
+
+The commit and the date in the heading mark the entry as released, so the next change needs a new
+entry with a new version; write new entries with a plain `## x.y.z` heading. The `Makefile` takes
+the version the bundle reports from the newest entry of `CHANGELOG.md`, through
+`tools/version.py`, without a `-n` revision.
 
 ## Sibling project
 

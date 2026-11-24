@@ -18,6 +18,24 @@ by the views that read `now`, the menu bar label and the code windows. The Launc
 tick is a property of the store, set after each change, since `SMAppService`'s status is not
 observable and nothing else redraws the menu.
 
+## Settings is an owned window hosting SwiftUI, and the menu keeps what is used with the codes
+
+The menu holds what is used while working with codes: the accounts with Copy Code, Show and
+Show in Menu Bar, Settings, Launch at Login, About and Quit. Adding, generating, importing and
+removing accounts, and the vaults with their sign-in, are in the Settings window; as a submenu per
+vault they made the menu too long to use.
+
+The window is an `NSWindow` made on the first request and hosting a SwiftUI `TabView`, like
+the code panels, and not a `Settings` scene. SwiftUI's `openSettings` and `SettingsLink` open
+the scene from a view hierarchy of an active app, which a `MenuBarExtra` app lacks; reports of
+it failing there, and needing a hidden window and switching the activation policy to work, made
+the plain window the safer choice. It is activated with the same call as the alerts, so it takes
+the keyboard. The add and remove confirmations and the dialogs that add, generate and import an
+account of a vault stay alerts, opened from the window; the vault form, which was too
+large for an alert, is a SwiftUI form with Save and Revert.
+
+An OIDC vault is signed in from the window, since the menu no longer has a sign-in item.
+
 ## The codes are shown in floating panels and beside the menu bar icon
 
 A code window is an `NSPanel` with the utility window style, hosting a SwiftUI view. It is a
@@ -111,13 +129,21 @@ account in the same `algorithm=...&digits=...&period=...` form as a keychain ite
 kept with the period count it was fetched for and is shown for that period alone, so a stale
 code is never shown; a failed fetch is not repeated within its period.
 
-## Vault accounts are in the user defaults, the credential is one keychain item
+## Each Vault profile is one keychain item, its accounts are in the user defaults
 
-A Vault account holds nothing secret, only the name of its key, so it is a record in the user
-defaults and has no keychain item. The one credential of the connection, a token, password or
-SecretID, is a generic password item of its own service, `<service>.vault`, so that listing the
-accounts, which reads the attributes of every item of the main service, never meets it.
-Switching to OIDC deletes it.
+A Vault account holds nothing secret, only its profile and the name of its key, so it is a
+record in the user defaults and has no keychain item. A profile is one generic password item of
+a service of its own, `<service>.vault`, so that listing the accounts, which reads the attributes
+of every item of the main service, never meets it. The item's label is the profile name, which
+Keychain Access shows; its account attribute is the profile's UUID, so a rename changes the
+label and nothing that refers to the profile. The settings are the item's generic attribute, as
+the parameters of a TOTP account are, so listing the profiles reads no secret; the credential,
+a token, password or SecretID, is its data, empty for OIDC.
+
+Each profile has a session of its own, so accounts of several servers show codes together. A
+profile's removal removes its accounts, whose keys stay in Vault, since they cannot show a code
+without it. The single connection of version 0.2.0 was not migrated: its settings, credential
+and accounts are deleted at the first launch, and are entered again as a profile.
 
 ## The OIDC token is kept in memory and the sign-in is explicit
 

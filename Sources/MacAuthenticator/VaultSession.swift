@@ -2,9 +2,15 @@ import AppKit
 import Observation
 import Vault
 
+/// A named Vault connection; the keychain item of the profile is labelled with its name.
+struct VaultProfile: Identifiable, Equatable {
+    var id: UUID
+    var name: String
+    var configuration: VaultConfiguration
+}
+
 /// Why the session cannot sign in.
 enum SessionError: LocalizedError {
-    case notConfigured
     case missingCredential
     case missingSetting(String)
     case invalidSetting(String)
@@ -13,8 +19,6 @@ enum SessionError: LocalizedError {
         switch self {
         case let .invalidSetting(name):
             return "The Vault setting \(name) is not valid."
-        case .notConfigured:
-            return "Vault is not configured."
         case .missingCredential:
             return "No Vault credential is stored; enter it in Vault Settings."
         case let .missingSetting(name):
@@ -23,42 +27,35 @@ enum SessionError: LocalizedError {
     }
 }
 
-/// The Vault connection: its settings, kept in the user defaults, and the token of the current
-/// sign-in, kept in memory alone.
+/// A Vault connection: a named profile, kept in the keychain with its credential, and the token of
+/// the current sign-in, kept in memory alone.
 @MainActor
 @Observable
 final class VaultSession {
     enum Status: Equatable {
-        case notConfigured
         case signedOut
         case signingIn
         case signedIn(until: Date?)
         case failed(String)
     }
 
-    private(set) var configuration: VaultConfiguration?
-    private(set) var status: Status
+    private(set) var profile: VaultProfile
+    private(set) var status: Status = .signedOut
     @ObservationIgnored private var token: VaultToken?
     @ObservationIgnored private var signInTask: Task<Void, Error>?
     @ObservationIgnored private var listener: OIDCCallbackListener?
 
-    init() {
-        let configuration = UserDefaults.standard.data(forKey: "vault")
-            .flatMap { try? JSONDecoder().decode(VaultConfiguration.self, from: $0) }
-        self.configuration = configuration
-        status = configuration == nil ? .notConfigured : .signedOut
+    init(profile: VaultProfile) {
+        self.profile = profile
     }
 
-    /// Saves the settings, and the credential when one is given, and signs out. The credential
-    /// of an OIDC configuration is deleted, since the identity provider signs the user in.
-    func configure(_ configuration: VaultConfiguration, credential: String?) throws {
-        if configuration.authMethod == .oidc {
-            try Keychain.deleteVaultCredential()
-        } else if let credential, !credential.isEmpty {
-            try Keychain.setVaultCredential(credential)
-        }
-        UserDefaults.standard.set(try JSONEncoder().encode(configuration), forKey: "vault")
-        self.configuration = configuration
+    var configuration: VaultConfiguration {
+        profile.configuration
+    }
+
+    /// Takes the new name and settings of the profile, and signs out.
+    func update(_ profile: VaultProfile) {
+        self.profile = profile
         signOut()
     }
 
@@ -66,7 +63,7 @@ final class VaultSession {
     func signOut() {
         listener?.cancel()
         token = nil
-        status = configuration == nil ? .notConfigured : .signedOut
+        status = .signedOut
     }
 
     /// Signs in with the configured method; calls made while a sign-in runs wait for it.
@@ -83,9 +80,6 @@ final class VaultSession {
     }
 
     private func performSignIn() async throws {
-        guard let configuration else {
-            throw SessionError.notConfigured
-        }
         status = .signingIn
         do {
             let token = try await login(configuration)
@@ -108,7 +102,7 @@ final class VaultSession {
             return value
         }
         func credential() throws -> String {
-            guard let credential = try Keychain.vaultCredential() else {
+            guard let credential = try Keychain.vaultCredential(of: profile.id) else {
                 throw SessionError.missingCredential
             }
             return credential
@@ -161,9 +155,6 @@ final class VaultSession {
     /// The token to use: the current one, renewed when half of its lease is gone, or a new
     /// sign-in. An OIDC sign-in is never started here.
     private func validToken() async throws -> VaultToken {
-        guard let configuration else {
-            throw SessionError.notConfigured
-        }
         if let current = token, let expires = current.expires {
             let left = expires.timeIntervalSinceNow
             if left <= 5 {
@@ -191,9 +182,6 @@ final class VaultSession {
     /// Runs a call with a valid token. A token Vault refuses is replaced once by a new sign-in,
     /// unless the token itself is the credential or the sign-in is through the browser.
     func authorized<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
-        guard let configuration else {
-            throw SessionError.notConfigured
-        }
         let first = try await validToken()
         do {
             return try await call(VaultClient(configuration: configuration, token: first.token))

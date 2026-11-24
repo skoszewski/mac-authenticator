@@ -8,10 +8,16 @@
 # The Vault tests start an in-memory "vault server -dev"; the vault binary must be on PATH, or
 # named by VAULT_BINARY. VAULT_TEST_PORT changes the server's port, 18200 by default.
 #
+# The bundle's version is that of the newest entry of CHANGELOG.md, read by tools/version.py.
+#
 # SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. The active developer
 # directory must be Xcode's, whose actool compiles Resources/AppIcon.icon.
 
-VERSION = 0.2.0
+PYTHON = python3
+VERSION := $(shell $(PYTHON) tools/version.py)
+ifeq ($(VERSION),)
+$(error tools/version.py found no version in CHANGELOG.md)
+endif
 SIGN_IDENTITY = -
 APP = dist/Mac Authenticator.app
 

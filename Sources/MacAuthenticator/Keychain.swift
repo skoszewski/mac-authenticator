@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import TOTP
+import Vault
 
 /// The accounts as generic password items of the login keychain, one per account: the item's
 /// data is the base32 secret and its attributes hold the rest of the account.
@@ -100,19 +101,52 @@ enum Keychain {
         }
     }
 
-    /// The Vault credential is the one item of its own service, so listing the accounts never
-    /// returns it.
-    private static func vaultQuery() -> [String: Any] {
+    /// The Vault profiles are the items of a service of their own, so listing the accounts never
+    /// returns them.
+    private static let vaultService = service + ".vault"
+    static let vaultItemDescription = "Mac Authenticator Vault profile"
+
+    private static func vaultQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service + ".vault",
-            kSecAttrAccount as String: "credential",
+            kSecAttrService as String: vaultService,
+            kSecAttrAccount as String: account,
         ]
     }
 
-    /// The Vault token, password or SecretID, or nil when none is stored.
-    static func vaultCredential() throws -> String? {
-        var query = vaultQuery()
+    /// The profiles of all items, read from their attributes alone, in the order of their
+    /// creation; an item whose attributes cannot be read is left out.
+    static func vaultProfiles() throws -> [VaultProfile] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: vaultService,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+            throw Failure(operation: "list the Vault profiles", status: status)
+        }
+        let profiles: [(profile: VaultProfile, created: Date)] = items.compactMap { item in
+            guard let id = (item[kSecAttrAccount as String] as? String).flatMap(UUID.init(uuidString:)),
+                  let name = item[kSecAttrLabel as String] as? String,
+                  let generic = item[kSecAttrGeneric as String] as? Data,
+                  let configuration = try? JSONDecoder().decode(VaultConfiguration.self, from: generic) else {
+                return nil
+            }
+            return (VaultProfile(id: id, name: name, configuration: configuration),
+                    item[kSecAttrCreationDate as String] as? Date ?? .distantPast)
+        }
+        return profiles.sorted { $0.created < $1.created }.map(\.profile)
+    }
+
+    /// The Vault token, password or SecretID of the profile; nil when none is stored.
+    static func vaultCredential(of id: UUID) throws -> String? {
+        var query = vaultQuery(account: id.uuidString)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecReturnData as String] = true
         var result: CFTypeRef?
@@ -123,27 +157,48 @@ enum Keychain {
         guard status == errSecSuccess, let data = result as? Data, let credential = String(data: data, encoding: .utf8) else {
             throw Failure(operation: "read the Vault credential", status: status)
         }
-        return credential
+        return credential.isEmpty ? nil : credential
     }
 
-    /// Replaces the stored Vault credential.
-    static func setVaultCredential(_ credential: String) throws {
-        try deleteVaultCredential()
-        var attributes = vaultQuery()
-        attributes[kSecAttrLabel as String] = "Mac Authenticator Vault"
-        attributes[kSecAttrDescription as String] = "Mac Authenticator Vault credential"
+    /// Adds the profile's item; the credential is empty for OIDC.
+    static func addVaultProfile(_ profile: VaultProfile, credential: String) throws {
+        var attributes = vaultQuery(account: profile.id.uuidString)
+        attributes[kSecAttrLabel as String] = profile.name
+        attributes[kSecAttrDescription as String] = vaultItemDescription
+        attributes[kSecAttrGeneric as String] = try JSONEncoder().encode(profile.configuration)
         attributes[kSecValueData as String] = Data(credential.utf8)
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
-            throw Failure(operation: "store the Vault credential", status: status)
+            throw Failure(operation: "add the Vault profile", status: status)
         }
     }
 
-    /// Deletes the Vault credential; one already gone is no failure.
-    static func deleteVaultCredential() throws {
-        let status = SecItemDelete(vaultQuery() as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw Failure(operation: "remove the Vault credential", status: status)
+    /// Replaces the profile's name and settings, and its credential when one is given; OIDC
+    /// profiles pass an empty credential.
+    static func updateVaultProfile(_ profile: VaultProfile, credential: String?) throws {
+        var attributes: [String: Any] = [
+            kSecAttrLabel as String: profile.name,
+            kSecAttrGeneric as String: try JSONEncoder().encode(profile.configuration),
+        ]
+        if let credential {
+            attributes[kSecValueData as String] = Data(credential.utf8)
         }
+        let status = SecItemUpdate(vaultQuery(account: profile.id.uuidString) as CFDictionary, attributes as CFDictionary)
+        guard status == errSecSuccess else {
+            throw Failure(operation: "update the Vault profile", status: status)
+        }
+    }
+
+    /// Deletes the profile's item; one already gone is no failure.
+    static func deleteVaultProfile(_ id: UUID) throws {
+        let status = SecItemDelete(vaultQuery(account: id.uuidString) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(operation: "remove the Vault profile", status: status)
+        }
+    }
+
+    /// Deletes the item of the single Vault credential of earlier versions.
+    static func deleteLegacyVaultCredential() {
+        SecItemDelete(vaultQuery(account: "credential") as CFDictionary)
     }
 }

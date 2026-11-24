@@ -7,6 +7,7 @@ import TOTP
 struct MacAuthenticatorApp: App {
     @State private var store: AccountStore
     private let windows: CodeWindows
+    private let settings: SettingsWindow
 
     init() {
         // Sets the policy of the Info.plist's LSUIElement, which an unbundled run lacks.
@@ -14,11 +15,12 @@ struct MacAuthenticatorApp: App {
         let store = AccountStore()
         _store = State(initialValue: store)
         windows = CodeWindows(store: store)
+        settings = SettingsWindow(store: store, windows: windows)
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(store: store, windows: windows)
+            MenuContent(store: store, windows: windows, settings: settings)
         } label: {
             MenuBarLabel(store: store)
         }
@@ -43,6 +45,7 @@ struct MenuBarLabel: View {
 struct MenuContent: View {
     let store: AccountStore
     let windows: CodeWindows
+    let settings: SettingsWindow
 
     var body: some View {
         if let loadError = store.loadError {
@@ -73,93 +76,17 @@ struct MenuContent: View {
                         get: { store.menuBarAccountID == account.id },
                         set: { store.setShownInMenuBar(account, $0) }
                     ))
-                    Button("Remove") {
-                        DispatchQueue.main.async { [store, windows] in
-                            Dialogs.removeAccount(account, from: store)
-                            windows.closeRemoved()
-                        }
-                    }
                 }
             }
         }
 
         Divider()
-        Button("Add Account...") {
-            DispatchQueue.main.async { [store] in
-                Dialogs.addAccount(to: store)
+        Button("Settings...") {
+            DispatchQueue.main.async { [settings] in
+                settings.show()
             }
         }
-        Button("Add Account from QR Code in Clipboard") {
-            DispatchQueue.main.async { [store] in
-                Dialogs.addAccountFromClipboard(to: store)
-            }
-        }
-
-        Divider()
-        Menu("Vault") {
-            switch store.vault.status {
-            case .notConfigured:
-                Text("Not configured")
-            case .signedOut:
-                Text("Signed out")
-            case .signingIn:
-                Text("Signing in...")
-            case .signedIn:
-                Text("Signed in")
-            case let .failed(message):
-                Text(message)
-            }
-            Divider()
-            Button("Sign In to Vault") {
-                DispatchQueue.main.async { [store] in
-                    Task {
-                        do {
-                            try await store.signInToVault()
-                        } catch is CancellationError {
-                        } catch {
-                            Dialogs.showError("Vault sign-in failed", error.localizedDescription)
-                        }
-                    }
-                }
-            }
-            .disabled(store.vault.configuration == nil || store.vault.status == .signingIn)
-            Button("Sign Out of Vault") {
-                store.signOutOfVault()
-            }
-            .disabled(store.vault.status == .notConfigured || store.vault.status == .signedOut)
-            Divider()
-            Button("Add Vault Key...") {
-                DispatchQueue.main.async { [store] in
-                    Task {
-                        await Dialogs.addVaultKey(to: store)
-                    }
-                }
-            }
-            .disabled(store.vault.configuration == nil)
-            Button("Generate Vault Key...") {
-                DispatchQueue.main.async { [store] in
-                    Task {
-                        await Dialogs.generateVaultKey(to: store)
-                    }
-                }
-            }
-            .disabled(store.vault.configuration == nil)
-            Button("Import Vault Key...") {
-                DispatchQueue.main.async { [store] in
-                    Task {
-                        await Dialogs.importVaultKey(to: store)
-                    }
-                }
-            }
-            .disabled(store.vault.configuration == nil)
-            Button("Vault Settings...") {
-                DispatchQueue.main.async { [store] in
-                    Dialogs.vaultSettings(for: store)
-                }
-            }
-        }
-
-        Divider()
+        .keyboardShortcut(",")
         Toggle("Launch at Login", isOn: Binding(
             get: { store.launchesAtLogin },
             set: { enabled in
@@ -182,3 +109,4 @@ struct MenuContent: View {
         .keyboardShortcut("q")
     }
 }
+
