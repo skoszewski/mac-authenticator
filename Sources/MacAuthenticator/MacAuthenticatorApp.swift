@@ -15,7 +15,12 @@ struct MacAuthenticatorApp: App {
         let store = AccountStore()
         _store = State(initialValue: store)
         windows = CodeWindows(store: store)
-        settings = SettingsWindow(store: store, windows: windows)
+        let settings = SettingsWindow(store: store, windows: windows)
+        self.settings = settings
+        let notifier = Notifier()
+        notifier.open = { settings.show(vault: $0) }
+        store.vaultProblemHandler = { notifier.post($0, $1) }
+        store.vaultSaved = { notifier.requestAuthorization() }
     }
 
     var body: some Scene {
@@ -34,6 +39,9 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(systemName: "lock.shield")
+        if !store.problems.isEmpty {
+            Image(systemName: "exclamationmark.triangle.fill")
+        }
         if let account = store.menuBarAccount, let code = store.code(of: account) {
             Text(code.groupedCode)
                 .monospacedDigit()
@@ -48,6 +56,16 @@ struct MenuContent: View {
     let settings: SettingsWindow
 
     var body: some View {
+        ForEach(store.problems) { issue in
+            Button("Vault \(issue.session.profile.name): \(issue.problem.title)", systemImage: "exclamationmark.triangle.fill") {
+                DispatchQueue.main.async { [settings] in
+                    settings.show(vault: issue.id)
+                }
+            }
+        }
+        if !store.problems.isEmpty {
+            Divider()
+        }
         if let loadError = store.loadError {
             Text(loadError)
             Button("Retry") {
@@ -64,7 +82,7 @@ struct MenuContent: View {
                                 do {
                                     try await store.copyCode(of: account)
                                 } catch {
-                                    Dialogs.showError("The code was not copied", error.localizedDescription)
+                                    Dialogs.showProblem("The code was not copied", error)
                                 }
                             }
                         }

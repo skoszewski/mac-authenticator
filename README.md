@@ -190,8 +190,8 @@ be copied; its code is fetched from Vault once for each period.
 The Vaults tab of the Settings window asks for:
 
 - the name of the vault, which must be unique;
-- the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for
-  local addresses alone;
+- the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for any
+  address, and then the credential and the codes cross the network unencrypted;
 - the namespace, for Vault Enterprise;
 - the mount of the TOTP engine, `totp` by default;
 - the sign-in method and its mount, which is named after the method by default:
@@ -232,6 +232,29 @@ URL; scan the code into another authenticator, or copy the URL, before choosing 
 **Import to Vault...** asks for a vault, a key name and a base32 secret or an `otpauth://totp/` URI; Vault
 keeps SHA1, SHA256 and SHA512 keys of 6 or 8 digits, and other keys are refused. Neither
 replaces a key that exists: the name must be new. Both add the account to the app.
+
+### When a vault does not work
+
+A failure is said in words: what is wrong, what happened, and what to do about it.
+
+- While a vault's last call failed, the menu bar icon shows a warning triangle beside the lock,
+  and the menu starts with a line `Vault <name>: <what is wrong>`; choosing it opens Settings on
+  that vault.
+- The vault's page in Settings shows the problem under its status, with the time of the last
+  attempt and **Copy Details**, which puts the text of the problem in the clipboard without any
+  secret. A call that works clears it.
+- A Vault account whose vault has a problem shows a warning in the Accounts list and a Problem
+  section in its details, and its code window says what is wrong in place of the code.
+- **Test Connection** on the vault's page checks the settings as typed, without saving them:
+  the address, whether the server answers and is unsealed, the sign-in, and the TOTP engine.
+  Each step shows passed, warning, failed or skipped, and the first failure says what to do. An
+  OIDC vault skips the sign-in and the engine, which need the browser.
+- When a vault that worked fails, a macOS notification names it; clicking it opens Settings on
+  the vault. A vault that keeps failing notifies once, until it works again. The permission is
+  asked when the first vault is saved, and the app bundle from `make` posts the notifications;
+  a run from Xcode does not.
+- Each new problem is also logged to the unified log, subsystem
+  `pl.waw.koszewscy.MacAuthenticator`, category `vault`, without secrets.
 
 ### What the Vault administrator prepares
 

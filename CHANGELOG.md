@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 - 2026-11-24 16:24:34 +0100
+
+feat: the app says what is wrong with a vault, in the menu bar, in Settings and in a
+notification, and reaches a Vault over plain HTTP at any address.
+
+- While a vault's last call failed, the menu bar icon shows a warning triangle, and the menu
+  starts with a line `Vault <name>: <what is wrong>` that opens Settings on that vault.
+- A problem is said in words: what is wrong, what happened and what to do, for an address that
+  does not resolve, nothing listening, a timeout, an untrusted certificate, a refused sign-in, a
+  denied policy, a wrong mount, a sealed Vault and the like.
+- The vault's page shows the problem under its status, with the time of the last attempt and a
+  Copy Details button. A vault whose server goes down is marked failed also when it uses a token.
+- A Vault account whose vault has a problem shows a warning in the Accounts list, a Problem
+  section in its details, and the problem in its code window. The Add from Vault dialog names the
+  vaults whose keys could not be listed.
+- Test Connection on the vault's page checks the settings as typed, without saving them: the
+  address, the server, the sign-in and the TOTP engine, and names the step that fails.
+- A macOS notification names a vault that worked and fails; clicking it opens Settings on the
+  vault. It needs the app made by make, and the permission is asked when the first vault is
+  saved.
+- App Transport Security is off for the app, so a Vault address with http:// works for any host
+  or IP address. The credential and the codes cross the network unencrypted over HTTP; an
+  https:// address is still checked against the system trust store.
+
 ## 0.3.1-2 - 2026-11-24 10:49:55 +0100
 
 feat: make signs the app with the identity of SIGN_IDENTITY or of the untracked Makefile.local.

@@ -6,14 +6,15 @@ import Vault
 struct SettingsView: View {
     let store: AccountStore
     let windows: CodeWindows
+    @Bindable var router: SettingsRouter
 
     var body: some View {
-        TabView {
-            Tab("Accounts", systemImage: "list.bullet") {
-                AccountsSettings(store: store, windows: windows)
+        TabView(selection: $router.tab) {
+            Tab("Accounts", systemImage: "list.bullet", value: SettingsRouter.Tab.accounts) {
+                AccountsSettings(store: store, windows: windows, router: router)
             }
-            Tab("Vaults", systemImage: "lock.shield") {
-                VaultSettings(store: store, windows: windows)
+            Tab("Vaults", systemImage: "lock.shield", value: SettingsRouter.Tab.vaults) {
+                VaultSettings(store: store, windows: windows, router: router)
             }
         }
         .scenePadding()
@@ -25,6 +26,7 @@ struct SettingsView: View {
 struct AccountsSettings: View {
     let store: AccountStore
     let windows: CodeWindows
+    let router: SettingsRouter
     @State private var selection: UUID?
 
     private var selectedAccount: Account? {
@@ -51,11 +53,18 @@ struct AccountsSettings: View {
                     }
                 }
                 List(store.accounts, selection: $selection) { account in
-                    VStack(alignment: .leading) {
-                        Text(account.name)
-                        Text(source(of: account))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(account.name)
+                            Text(source(of: account))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if store.problem(of: account) != nil {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                        }
                     }
                     .tag(account.id)
                 }
@@ -106,7 +115,7 @@ struct AccountsSettings: View {
             .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
 
             if let account = selectedAccount {
-                AccountDetails(store: store, windows: windows, account: account, source: source(of: account))
+                AccountDetails(store: store, windows: windows, router: router, account: account, source: source(of: account))
                     .id(account.id)
                     .frame(minWidth: 380)
             } else {
@@ -122,11 +131,27 @@ struct AccountsSettings: View {
 private struct AccountDetails: View {
     let store: AccountStore
     let windows: CodeWindows
+    let router: SettingsRouter
     let account: Account
     let source: String
 
     var body: some View {
         Form {
+            if let problem = store.problem(of: account) {
+                Section("Problem") {
+                    Text(problem.title)
+                        .foregroundStyle(.red)
+                    Text(problem.detail)
+                    Text(problem.suggestion)
+                        .foregroundStyle(.secondary)
+                    if let profile = store.vaultKeys[account.id]?.profile, store.vault(for: profile) != nil {
+                        Button("Show Vault") {
+                            router.vault = profile
+                            router.tab = .vaults
+                        }
+                    }
+                }
+            }
             Section("Account") {
                 LabeledContent("Name", value: account.name)
                 if let issuer = account.issuer {
@@ -156,7 +181,7 @@ private struct AccountDetails: View {
                             do {
                                 try await store.copyCode(of: account)
                             } catch {
-                                Dialogs.showError("The code was not copied", error.localizedDescription)
+                                Dialogs.showProblem("The code was not copied", error)
                             }
                         }
                     }
@@ -177,6 +202,7 @@ private enum VaultSelection: Hashable {
 struct VaultSettings: View {
     let store: AccountStore
     let windows: CodeWindows
+    @Bindable var router: SettingsRouter
     @State private var selection: VaultSelection?
 
     private var selectedSession: VaultSession? {
@@ -238,6 +264,12 @@ struct VaultSettings: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .onChange(of: router.vault, initial: true) { _, id in
+            if let id {
+                selection = .profile(id)
+                router.vault = nil
+            }
+        }
     }
 }
 
@@ -265,8 +297,8 @@ extension VaultSession.Status {
             return "Signing in..."
         case .signedIn:
             return "Signed in"
-        case let .failed(message):
-            return message
+        case let .failed(problem):
+            return problem.title
         }
     }
 }
@@ -360,6 +392,8 @@ private struct VaultProfileEditor: View {
     let saved: (UUID) -> Void
     @State private var draft: VaultProfileDraft
     @State private var message: String?
+    @State private var checks: [VaultCheck] = []
+    @State private var testing = false
 
     init(store: AccountStore, session: VaultSession?, saved: @escaping (UUID) -> Void) {
         self.store = store
@@ -387,11 +421,30 @@ private struct VaultProfileEditor: View {
             saved(profile.profile.id)
             if configuration.authMethod != .oidc {
                 Task {
+                    // The vault's status shows the outcome.
                     try? await store.signInToVault(profile)
                 }
             }
         } catch {
-            message = error.localizedDescription
+            message = VaultProblem(error).report
+        }
+    }
+
+    /// Tests the vault as the form describes it, with the stored credential when none is typed.
+    private func test() {
+        testing = true
+        checks = []
+        Task {
+            do {
+                let configuration = try draft.configuration()
+                let credential = draft.credential.isEmpty
+                    ? try session.flatMap { try Keychain.vaultCredential(of: $0.profile.id) } : draft.credential
+                checks = await VaultDiagnostics.run(configuration: configuration, credential: credential)
+            } catch {
+                checks = [VaultCheck(step: "Settings", outcome: .failed, message: "The settings cannot be tested.",
+                                     problem: VaultProblem(error))]
+            }
+            testing = false
         }
     }
 
@@ -435,9 +488,24 @@ private struct VaultProfileEditor: View {
                         Text(session.status.text)
                             .foregroundStyle(session.status.color)
                     }
+                    if case let .failed(problem) = session.status {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(problem.detail)
+                            Text(problem.suggestion)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let last = session.lastAttempt {
+                            LabeledContent("Last attempt", value: last.formatted(date: .omitted, time: .standard))
+                        }
+                        Button("Copy Details") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString("\(session.profile.name)\n\(problem.report)", forType: .string)
+                        }
+                    }
                     HStack {
                         Button("Sign In") {
                             Task {
+                                // The vault's status shows the outcome.
                                 try? await store.signInToVault(session)
                             }
                         }
@@ -447,6 +515,19 @@ private struct VaultProfileEditor: View {
                         }
                         .disabled(session.status == .signedOut)
                     }
+                }
+                HStack {
+                    Button("Test Connection") {
+                        test()
+                    }
+                    .disabled(testing)
+                    if testing {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                ForEach(checks.indices, id: \.self) { index in
+                    CheckRow(check: checks[index])
                 }
             }
             Section {
@@ -471,3 +552,38 @@ private struct VaultProfileEditor: View {
     }
 }
 
+
+/// One step of a connection test: its outcome, its message, and what to do when it is not passed.
+private struct CheckRow: View {
+    let check: VaultCheck
+
+    private var symbol: (name: String, color: Color) {
+        switch check.outcome {
+        case .passed:
+            return ("checkmark.circle.fill", .green)
+        case .warning:
+            return ("exclamationmark.triangle.fill", .yellow)
+        case .failed:
+            return ("xmark.octagon.fill", .red)
+        case .skipped:
+            return ("minus.circle", .gray)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Image(systemName: symbol.name)
+                .foregroundStyle(symbol.color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(check.step)
+                    .bold()
+                Text(check.message)
+                if let problem = check.problem {
+                    Text(problem.detail)
+                    Text(problem.suggestion)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}

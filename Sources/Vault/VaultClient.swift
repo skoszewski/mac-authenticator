@@ -266,6 +266,15 @@ public struct VaultClient: Sendable {
         return try token(from: data, at: Date())
     }
 
+    /// The status of Vault's health check, which also answers while Vault is sealed or in standby.
+    func healthStatus() async throws -> Int {
+        let (_, response) = try await session.data(for: makeRequest("GET", "sys/health"))
+        guard let http = response as? HTTPURLResponse else {
+            throw VaultError.badResponse("an HTTP answer")
+        }
+        return http.statusCode
+    }
+
     /// The client's own token as Vault knows it, so its end is known.
     public func lookupSelf() async throws -> VaultToken {
         struct Reply: Decodable {

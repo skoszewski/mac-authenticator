@@ -173,6 +173,57 @@ struct VaultAgainstDevServerTests {
         }
     }
 
+    private func configuration(_ server: VaultDevServer, address: String? = nil,
+                               method: AuthMethod = .token) -> VaultConfiguration {
+        VaultConfiguration(address: address ?? server.address, authMethod: method, username: "alice")
+    }
+
+    @Test func aConnectionTestPassesAgainstTheServer() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: server.rootToken)
+        #expect(checks.map(\.step) == ["Address", "Server", "Sign-in", "TOTP engine"])
+        #expect(checks.map(\.outcome) == [.warning, .passed, .passed, .passed])
+    }
+
+    @Test func aConnectionTestNamesTheStepOfAnUnreachableServer() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, address: "http://127.0.0.1:1"),
+                                                credential: server.rootToken)
+        #expect(checks.map(\.step) == ["Address", "Server"])
+        #expect(checks.last?.outcome == .failed)
+        #expect(checks.last?.problem?.kind == .network)
+    }
+
+    @Test func aConnectionTestNamesTheStepOfARefusedToken() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: "not-a-token")
+        #expect(checks.last?.step == "Sign-in")
+        #expect(checks.last?.outcome == .failed)
+        #expect(checks.last?.problem?.kind == .denied)
+    }
+
+    @Test func aConnectionTestWarnsWhenTheKeysCannotBeListed() async throws {
+        let server = try server()
+        let token = try await server.token(policy: "nolist")
+        let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: token)
+        #expect(checks.last?.step == "TOTP engine")
+        #expect(checks.last?.outcome == .warning)
+        #expect(checks.last?.problem?.kind == .denied)
+    }
+
+    @Test func aConnectionTestOfABadAddressStopsAtTheAddress() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, address: "vault"), credential: nil)
+        #expect(checks.map(\.step) == ["Address"])
+        #expect(checks.first?.problem?.kind == .address)
+    }
+
+    @Test func aConnectionTestSkipsTheSignInOfOIDC() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .oidc), credential: nil)
+        #expect(checks.map(\.outcome) == [.warning, .passed, .skipped, .skipped])
+    }
+
     @Test func aRevokedTokenIsDenied() async throws {
         let server = try server()
         let token = try await server.token(policy: "full")
@@ -256,5 +307,54 @@ struct VaultAgainstDevServerTests {
         await #expect(throws: VaultError.self) {
             try await listener.callback(timeout: .milliseconds(300))
         }
+    }
+}
+
+@Suite struct VaultProblemTests {
+    private func problem(_ code: URLError.Code) -> VaultProblem {
+        let url = URL(string: "https://vault.example.com:8200")!
+        return VaultProblem(URLError(code, userInfo: [NSURLErrorFailingURLErrorKey: url]))
+    }
+
+    @Test(arguments: [
+        (URLError.Code.cannotFindHost, VaultProblem.Kind.network),
+        (.cannotConnectToHost, .network),
+        (.timedOut, .network),
+        (.notConnectedToInternet, .network),
+        (.networkConnectionLost, .network),
+        (.secureConnectionFailed, .tls),
+        (.serverCertificateUntrusted, .tls),
+        (.serverCertificateHasUnknownRoot, .tls),
+        (.serverCertificateHasBadDate, .tls),
+        (.appTransportSecurityRequiresSecureConnection, .tls),
+        (.badServerResponse, .response),
+        (.badURL, .address),
+    ])
+    func aURLErrorIsSaidInWords(code: URLError.Code, kind: VaultProblem.Kind) {
+        let found = problem(code)
+        #expect(found.kind == kind)
+        #expect(!found.title.isEmpty && !found.detail.isEmpty && !found.suggestion.isEmpty)
+        #expect(found.title != "The connection failed")
+    }
+
+    @Test func aNameThatDoesNotResolveNamesTheHost() {
+        #expect(problem(.cannotFindHost).detail.contains("vault.example.com"))
+    }
+
+    @Test(arguments: [
+        (400, VaultProblem.Kind.server), (403, .denied), (404, .server), (429, .server), (503, .server), (500, .server),
+    ])
+    func anHTTPStatusIsSaidInWords(status: Int, kind: VaultProblem.Kind) {
+        let found = VaultProblem(VaultError.http(status: status, messages: ["permission denied"]))
+        #expect(found.kind == kind)
+        #expect(found.detail.contains("permission denied"))
+        #expect(!found.suggestion.isEmpty)
+    }
+
+    @Test func aProblemOfAnotherErrorKeepsItsText() {
+        struct Odd: LocalizedError { var errorDescription: String? { "odd failure" } }
+        let found = VaultProblem(Odd())
+        #expect(found.kind == .other)
+        #expect(found.detail == "odd failure")
     }
 }

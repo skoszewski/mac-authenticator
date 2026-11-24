@@ -126,6 +126,27 @@ import is limited to what Vault keeps, SHA1, SHA256 or SHA512 with 6 or 8 digits
 refused before the call, so no key is stored that the app could not show. A failure to add the
 account after Vault holds the key is reported, and does not repeat the write.
 
+## Problems are classified once and shown where the user looks
+
+Every failure of a Vault call goes through `VaultProblem` in the library, which turns a
+`URLError`, a `VaultError`, a listener error or an app error that states its own problem into a
+title, a detail and a suggestion. The raw system texts name neither the cause nor the next step,
+and one mapping keeps every surface saying the same thing. The mapping is in the library so
+that it is tested without the app.
+
+A `VaultSession` records the problem of its last call: a failed status holds it, and a call that
+works returns the status to signed in, so a token vault whose server goes down shows it, which a
+status set only at sign-in did not. The session reports a vault that worked and then failed once,
+until it works again; the store retries once a period, and a notification for each retry would be
+noise. Notifications need the permission and a bundle, so the permission is asked when the first
+vault is saved, where its purpose is clear, and an Xcode run posts none.
+
+The user meets a problem in four places that read the session: a warning beside the menu bar
+icon and a menu line that opens the vault, the vault's page with the cause and the time of the
+attempt, the account in the list and in its window, and the notification. Test Connection runs
+the steps of a connection one by one on the settings as typed, without a session or a saved
+setting, so a vault can be checked before it is saved and the failing step is named.
+
 ## Vault codes are fetched, never computed
 
 An account of the Vault TOTP engine has no secret in the app: the code comes from
@@ -165,10 +186,14 @@ role's `allowed_redirect_uris` must hold. The listener answers one request and s
 of the authorisation URL is compared with the state of the redirect before the code is passed
 to Vault.
 
-## Vault is reached over HTTPS and tested against a dev server
+## Vault is reached through URLSession, over HTTPS or plain HTTP, and tested against a dev server
 
-Requests go through `URLSession`, so App Transport Security and the system trust store apply;
-`NSAllowsLocalNetworking` allows plain HTTP to local addresses alone, for a dev server.
+Requests go through `URLSession`, so the system trust store applies. App Transport Security is
+off for the app, `NSAllowsArbitraryLoads` in `Resources/Info.plist`, so a Vault at any address can
+be reached over plain HTTP, such as one on a private network without TLS, and the address of a
+Vault is a setting that no build knows. The app makes no other connections; the OIDC sign-in is
+made by the browser. The credential and the codes cross the network unencrypted over HTTP, which
+is the user's choice for that Vault; an HTTPS address keeps the checks of the system trust store.
 
 `VaultTests` start `vault server -dev`, which keeps its storage in memory, once for the whole
 suite, through a suite trait that provides the test scope, and configure it through its HTTP

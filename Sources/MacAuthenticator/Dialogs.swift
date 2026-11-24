@@ -20,6 +20,12 @@ enum Dialogs {
         alert.runModal()
     }
 
+    /// Shows an error as its problem: what is wrong, what happened and what to do.
+    static func showProblem(_ message: String, _ error: Error) {
+        let problem = VaultProblem(error)
+        showError(message, "\(problem.title)\n\(problem.detail)\n\n\(problem.suggestion)")
+    }
+
     /// Asks for a name and a secret or otpauth URI until an account is added or Cancel is chosen.
     static func addAccount(to store: AccountStore, name: String = "", input: String = "") {
         let nameField = NSTextField(string: name)
@@ -101,15 +107,24 @@ enum Dialogs {
             return
         }
         var keys: [UUID: [String]] = [:]
+        var notes: [String] = []
         for session in sessions {
-            keys[session.profile.id] = (try? await session.authorized { try await $0.listKeys() }) ?? []
+            do {
+                keys[session.profile.id] = try await session.authorized { try await $0.listKeys() }
+            } catch {
+                keys[session.profile.id] = []
+                notes.append("\(session.profile.name): \(VaultProblem(error).title).")
+            }
         }
         let picker = VaultKeyPicker(sessions: sessions, keys: keys)
         let nameField = NSTextField()
         nameField.placeholderString = "Empty to take it from the key"
         let stack = fieldStack([("Vault", picker.vaultPopUp), ("Key", picker.keyBox), ("Account name", nameField)])
 
-        var information = "Pick a key of the vault's TOTP engine, or type its name; the list is empty when the vault does not let this app list the keys, or is not signed in."
+        var information = "Pick a key of the vault's TOTP engine, or type its name."
+        if !notes.isEmpty {
+            information += " The keys could not be listed: " + notes.joined(separator: " ")
+        }
         while true {
             let alert = NSAlert()
             alert.messageText = "Add from Vault"
@@ -132,7 +147,7 @@ enum Dialogs {
                                           to: store, using: session)
                 return
             } catch {
-                information = error.localizedDescription
+                information = VaultProblem(error).report
             }
         }
     }
@@ -240,7 +255,7 @@ enum Dialogs {
                     try await $0.generateKey(key, issuer: issuer, accountName: accountName)
                 }
             } catch {
-                information = error.localizedDescription
+                information = VaultProblem(error).report
                 continue
             }
 
@@ -291,7 +306,7 @@ enum Dialogs {
                 let input = secretField.stringValue
                 try await session.authorized { try await $0.importKey(key, input: input) }
             } catch {
-                information = error.localizedDescription
+                information = VaultProblem(error).report
                 continue
             }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import OSLog
 import Vault
 
 /// A named Vault connection; the keychain item of the profile is labelled with its name.
@@ -27,6 +28,29 @@ enum SessionError: LocalizedError {
     }
 }
 
+extension SessionError: VaultProblemConvertible {
+    var vaultProblem: VaultProblem {
+        switch self {
+        case .missingCredential:
+            return VaultProblem(kind: .credential, title: "No credential is stored", detail: "The keychain holds no token, password or SecretID for this vault.",
+                                suggestion: "Enter it in Settings > Vaults and save.")
+        case let .missingSetting(name):
+            return VaultProblem(kind: .address, title: "A setting is empty", detail: "\(name) is empty.",
+                                suggestion: "Fill it in Settings > Vaults and save.")
+        case let .invalidSetting(name):
+            return VaultProblem(kind: .address, title: "A setting is not valid", detail: "\(name) is not valid.",
+                                suggestion: "Correct it in Settings > Vaults and save.")
+        }
+    }
+}
+
+extension Keychain.Failure: VaultProblemConvertible {
+    var vaultProblem: VaultProblem {
+        VaultProblem(kind: .credential, title: "The keychain refused", detail: errorDescription ?? "The keychain call failed.",
+                     suggestion: "Allow Mac Authenticator to use the keychain item, or enter the credential again in Settings > Vaults.")
+    }
+}
+
 /// A Vault connection: a named profile, kept in the keychain with its credential, and the token of
 /// the current sign-in, kept in memory alone.
 @MainActor
@@ -36,11 +60,18 @@ final class VaultSession {
         case signedOut
         case signingIn
         case signedIn(until: Date?)
-        case failed(String)
+        case failed(VaultProblem)
     }
+
+    private static let log = Logger(subsystem: "pl.waw.koszewscy.MacAuthenticator", category: "vault")
 
     private(set) var profile: VaultProfile
     private(set) var status: Status = .signedOut
+    /// When the last call to the vault ended, in success or in failure.
+    private(set) var lastAttempt: Date?
+    /// Called once when a vault that worked fails, until it works again.
+    @ObservationIgnored var onProblem: ((VaultSession, VaultProblem) -> Void)?
+    @ObservationIgnored private var worked = false
     @ObservationIgnored private var token: VaultToken?
     @ObservationIgnored private var signInTask: Task<Void, Error>?
     @ObservationIgnored private var listener: OIDCCallbackListener?
@@ -63,7 +94,35 @@ final class VaultSession {
     func signOut() {
         listener?.cancel()
         token = nil
+        worked = false
         status = .signedOut
+    }
+
+    /// Records a failed call: the status shows its problem, and a vault that worked is reported once.
+    private func report(_ error: Error) {
+        guard !(error is CancellationError) else {
+            return
+        }
+        let problem = VaultProblem(error)
+        lastAttempt = Date()
+        guard status != .failed(problem) else {
+            return
+        }
+        status = .failed(problem)
+        Self.log.error("\(self.profile.name, privacy: .public): \(problem.title, privacy: .public)")
+        if worked {
+            worked = false
+            onProblem?(self, problem)
+        }
+    }
+
+    /// Records a call that worked; a failed status returns to signed in.
+    private func succeeded() {
+        worked = true
+        lastAttempt = Date()
+        if case .failed = status {
+            status = .signedIn(until: token?.expires)
+        }
     }
 
     /// Signs in with the configured method; calls made while a sign-in runs wait for it.
@@ -85,11 +144,12 @@ final class VaultSession {
             let token = try await login(configuration)
             self.token = token
             status = .signedIn(until: token.expires)
+            succeeded()
         } catch is CancellationError {
             status = .signedOut
             throw CancellationError()
         } catch {
-            status = .failed(error.localizedDescription)
+            report(error)
             throw error
         }
     }
@@ -179,9 +239,21 @@ final class VaultSession {
         return token
     }
 
-    /// Runs a call with a valid token. A token Vault refuses is replaced once by a new sign-in,
-    /// unless the token itself is the credential or the sign-in is through the browser.
+    /// Runs a call with a valid token, and records its outcome in the status.
     func authorized<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
+        do {
+            let result = try await perform(call)
+            succeeded()
+            return result
+        } catch {
+            report(error)
+            throw error
+        }
+    }
+
+    /// A token Vault refuses is replaced once by a new sign-in, unless the token itself is the
+    /// credential or the sign-in is through the browser.
+    private func perform<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
         let first = try await validToken()
         do {
             return try await call(VaultClient(configuration: configuration, token: first.token))

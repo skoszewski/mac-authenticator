@@ -81,11 +81,21 @@ struct CodeView: View {
                                 do {
                                     try await store.copyCode(of: account)
                                 } catch {
-                                    Dialogs.showError("The code was not copied", error.localizedDescription)
+                                    Dialogs.showProblem("The code was not copied", error)
                                 }
                             }
                         }
                     }
+                } else if let problem = store.problem(of: account) {
+                    Text(problem.title)
+                        .bold()
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(problem.suggestion)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(store.secretErrors[accountID]
                          ?? (store.vaultKeys[accountID] == nil ? "The secret is not read." : "The code is fetched from Vault."))

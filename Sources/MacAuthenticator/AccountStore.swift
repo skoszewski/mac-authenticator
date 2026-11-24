@@ -45,6 +45,13 @@ private struct VaultRecord: Codable {
     var added: Date
 }
 
+/// A vault that needs the user's attention, and why.
+struct VaultIssue: Identifiable {
+    let id: UUID
+    let session: VaultSession
+    let problem: VaultProblem
+}
+
 /// A code fetched from Vault, with the period count it is valid for.
 private struct VaultCode {
     var code: String
@@ -57,6 +64,10 @@ private struct VaultCode {
 @Observable
 final class AccountStore {
     private(set) var accounts: [Account] = []
+    /// Called when a vault that worked fails.
+    @ObservationIgnored var vaultProblemHandler: ((VaultSession, VaultProblem) -> Void)?
+    /// Called after a vault is saved.
+    @ObservationIgnored var vaultSaved: (() -> Void)?
     /// The sessions of the Vault profiles, in the order the profiles were created.
     private(set) var vaults: [VaultSession] = []
     /// The Vault key and profile of each account whose codes Vault makes.
@@ -115,11 +126,12 @@ final class AccountStore {
     func reload() {
         do {
             vaults = try Keychain.vaultProfiles().map { profile in
-                guard let session = vaults.first(where: { $0.profile.id == profile.id }) else {
-                    return VaultSession(profile: profile)
-                }
+                let session = vaults.first(where: { $0.profile.id == profile.id }) ?? VaultSession(profile: profile)
                 if session.profile != profile {
                     session.update(profile)
+                }
+                session.onProblem = { [weak self] session, problem in
+                    self?.vaultProblemHandler?(session, problem)
                 }
                 return session
             }
@@ -188,6 +200,7 @@ final class AccountStore {
         try checkProfileName(name, excluding: nil)
         let profile = VaultProfile(id: UUID(), name: name, configuration: configuration)
         try Keychain.addVaultProfile(profile, credential: configuration.authMethod == .oidc ? "" : credential)
+        vaultSaved?()
         reload()
         return vault(for: profile.id) ?? VaultSession(profile: profile)
     }
@@ -321,9 +334,6 @@ final class AccountStore {
                 continue
             }
             guard let session = vault(for: vaultKey.profile) else {
-                if secretErrors[account.id] != StoreError.profileRemoved.localizedDescription {
-                    secretErrors[account.id] = StoreError.profileRemoved.localizedDescription
-                }
                 continue
             }
             let key = vaultKey.key
@@ -340,13 +350,38 @@ final class AccountStore {
                 do {
                     let code = try await session.authorized { try await $0.code(key: key) }
                     vaultCodes[id] = VaultCode(code: code, counter: counter)
-                    secretErrors[id] = nil
                 } catch {
+                    // The session records the problem.
                     vaultFailures[id] = counter
-                    secretErrors[id] = error.localizedDescription
                 }
             }
         }
+    }
+
+    /// The vaults whose last call failed.
+    var problems: [VaultIssue] {
+        vaults.compactMap { session in
+            if case let .failed(problem) = session.status {
+                return VaultIssue(id: session.profile.id, session: session, problem: problem)
+            }
+            return nil
+        }
+    }
+
+    /// Why a Vault account has no code: its vault failed, or is gone.
+    func problem(of account: Account) -> VaultProblem? {
+        guard let vaultKey = vaultKeys[account.id] else {
+            return nil
+        }
+        guard let session = vault(for: vaultKey.profile) else {
+            return VaultProblem(kind: .other, title: "The vault of this account was removed",
+                                detail: "The account takes its codes from a vault that is not set up any more.",
+                                suggestion: "Remove the account, or add the vault again in Settings > Vaults.")
+        }
+        if case let .failed(problem) = session.status {
+            return problem
+        }
+        return nil
     }
 
     /// Forgets the Vault codes and failures, so the shown accounts fetch again at once.
