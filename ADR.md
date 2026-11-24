@@ -22,8 +22,8 @@ observable and nothing else redraws the menu.
 
 The menu holds what is used while working with codes: the accounts with Copy Code, Show and
 Show in Menu Bar, Settings, Launch at Login, About and Quit. Adding, generating, importing and
-removing accounts, and the vaults with their sign-in, are in the Settings window; as a submenu per
-vault they made the menu too long to use.
+removing accounts, and the vaults with their sign-in, are in the Settings window, which keeps the
+menu short.
 
 The window is an `NSWindow` made on the first request and hosting a SwiftUI `TabView`, like
 the code panels, and not a `Settings` scene. SwiftUI's `openSettings` and `SettingsLink` open
@@ -34,7 +34,8 @@ the keyboard. The add and remove confirmations and the dialogs that add, generat
 account of a vault stay alerts, opened from the window; the vault form, which was too
 large for an alert, is a SwiftUI form with Save and Revert.
 
-An OIDC vault is signed in from the window, since the menu no longer has a sign-in item.
+A vault is signed in and out from the window, since the menu has no sign-in item; an OIDC vault
+needs it after each launch.
 
 ## The codes are shown in floating panels and beside the menu bar icon
 
@@ -86,6 +87,10 @@ SwiftPM builds the executable but not an app bundle. The Makefile copies the exe
 `plutil`, and signs the bundle with `SIGN_IDENTITY`, ad hoc by default, which needs no Apple
 Developer Program membership. The keychain item's access follows the signature, so a stable
 identity spares the question macOS asks after an ad-hoc rebuild.
+
+The bundle is assembled and signed in `.build/stage` and moved into `dist` whole. Assembled in
+place, it would exist for the seconds the icon compiler takes without its `Info.plist`, which
+Launch Services and Finder register as it is, leaving the finished app with a no-entry sign.
 
 The app's name, Mac Authenticator, is `CFBundleDisplayName`. `CFBundleName` can hold up to 15
 characters, so it is the shorter `Authenticator`; the About panel, which shows `CFBundleName`
@@ -142,8 +147,7 @@ a token, password or SecretID, is its data, empty for OIDC.
 
 Each profile has a session of its own, so accounts of several servers show codes together. A
 profile's removal removes its accounts, whose keys stay in Vault, since they cannot show a code
-without it. The single connection of version 0.2.0 was not migrated: its settings, credential
-and accounts are deleted at the first launch, and are entered again as a profile.
+without it.
 
 ## The OIDC token is kept in memory and the sign-in is explicit
 

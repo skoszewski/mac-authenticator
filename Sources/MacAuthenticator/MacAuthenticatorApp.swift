@@ -10,7 +10,7 @@ struct MacAuthenticatorApp: App {
     private let settings: SettingsWindow
 
     init() {
-        // Sets the policy of the Info.plist's LSUIElement, which an unbundled run lacks.
+        // Run as a menu bar app without a Dock icon, bundled or not.
         NSApplication.shared.setActivationPolicy(.accessory)
         let store = AccountStore()
         _store = State(initialValue: store)

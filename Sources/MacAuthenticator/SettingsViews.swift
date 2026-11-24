@@ -31,12 +31,12 @@ struct AccountsSettings: View {
         store.accounts.first { $0.id == selection }
     }
 
-    /// Where an account's secret is: the keychain, or the vault that makes its codes.
+    /// The store of an account's secret: the keychain, or the vault that makes its codes.
     private func source(of account: Account) -> String {
         guard let vaultKey = store.vaultKeys[account.id] else {
             return "Keychain"
         }
-        return store.vault(for: vaultKey.profile)?.profile.name ?? "Vault removed"
+        return "Vault: \(store.vault(for: vaultKey.profile)?.profile.name ?? "removed")"
     }
 
     var body: some View {
@@ -132,7 +132,7 @@ private struct AccountDetails: View {
                 if let issuer = account.issuer {
                     LabeledContent("Issuer", value: issuer)
                 }
-                LabeledContent(store.vaultKeys[account.id] == nil ? "Stored in" : "Vault", value: source)
+                LabeledContent("Store", value: source)
                 if let key = store.vaultKeys[account.id]?.key {
                     LabeledContent("Vault key", value: key)
                 }
@@ -191,9 +191,13 @@ struct VaultSettings: View {
             VStack(spacing: 0) {
                 List(selection: $selection) {
                     ForEach(store.vaults, id: \.profile.id) { session in
-                        Label(session.profile.name, systemImage: "circle.fill")
-                            .foregroundStyle(.primary, session.status.color)
-                            .tag(VaultSelection.profile(session.profile.id))
+                        HStack {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(session.status.color)
+                            Text(session.profile.name)
+                        }
+                        .tag(VaultSelection.profile(session.profile.id))
                     }
                     if selection == .new {
                         Label("New vault", systemImage: "plus.circle")
@@ -437,11 +441,11 @@ private struct VaultProfileEditor: View {
                                 try? await store.signInToVault(session)
                             }
                         }
-                        .disabled(session.configuration.authMethod != .oidc || session.status == .signingIn)
+                        .disabled(session.status == .signingIn)
                         Button("Sign Out") {
                             store.signOutOfVault(session)
                         }
-                        .disabled(session.configuration.authMethod != .oidc || session.status == .signedOut)
+                        .disabled(session.status == .signedOut)
                     }
                 }
             }

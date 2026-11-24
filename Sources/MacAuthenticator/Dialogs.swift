@@ -244,7 +244,7 @@ enum Dialogs {
                 continue
             }
 
-            // The key exists now; a failure to add the account must not lead to generating it again.
+            // A failure to add the account is reported, and the key is not generated again.
             showGeneratedKey(generated)
             do {
                 try await addVaultAccount(of: key, named: "", to: store, using: session)
@@ -295,7 +295,7 @@ enum Dialogs {
                 continue
             }
 
-            // The key is stored now; a failure to add the account must not lead to importing it again.
+            // A failure to add the account is reported, and the key is not imported again.
             do {
                 try await addVaultAccount(of: key, named: nameField.stringValue.trimmingCharacters(in: .whitespaces),
                                           to: store, using: session)

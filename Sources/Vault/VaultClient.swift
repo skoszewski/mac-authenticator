@@ -322,7 +322,7 @@ public struct VaultClient: Sendable {
                             algorithm: payload.algorithm, digits: payload.digits, period: payload.period)
     }
 
-    /// Refuses a name a key has already, since writing to it would replace its secret.
+    /// Refuses a name that a key has already.
     private func requireNewKey(_ name: String) async throws {
         do {
             _ = try await readKey(name)

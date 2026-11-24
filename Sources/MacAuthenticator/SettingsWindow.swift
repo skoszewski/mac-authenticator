@@ -1,8 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The Settings window, made on the first call and kept; it is an AppKit window hosting SwiftUI,
-/// since a menu bar app has no SwiftUI scene to open the Settings scene from.
+/// The Settings window, made on the first call and kept: an AppKit window hosting SwiftUI.
 @MainActor
 final class SettingsWindow {
     private let store: AccountStore

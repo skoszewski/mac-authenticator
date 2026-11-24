@@ -101,8 +101,7 @@ enum Keychain {
         }
     }
 
-    /// The Vault profiles are the items of a service of their own, so listing the accounts never
-    /// returns them.
+    /// The Vault profiles are the items of a service of their own.
     private static let vaultService = service + ".vault"
     static let vaultItemDescription = "Mac Authenticator Vault profile"
 
@@ -197,7 +196,7 @@ enum Keychain {
         }
     }
 
-    /// Deletes the item of the single Vault credential of earlier versions.
+    /// Deletes the credential item that belongs to no profile.
     static func deleteLegacyVaultCredential() {
         SecItemDelete(vaultQuery(account: "credential") as CFDictionary)
     }

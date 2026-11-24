@@ -89,9 +89,10 @@ open "$HOME/Applications/Mac Authenticator.app"
 The Settings window has two tabs, each a list on the left with **+** and **-** buttons under
 it, and the details of the selected item on the right.
 
-**Accounts** lists all the accounts, whichever place keeps the secret, the keychain or a vault,
-with the name of that place. The details show the account's name, issuer, place and parameters,
-and hold **Show in menu bar**, **Show Window** and **Copy Code**.
+**Accounts** lists all the accounts, whichever store keeps the secret, with its type under each
+name: Keychain, or "Vault: " and the name of the vault. The details show the account's
+name, issuer, store and parameters, and hold **Show in menu bar**, **Show Window** and
+**Copy Code**.
 
 - **+** opens a menu of the ways to add an account:
   - **Account...** asks for a name and a secret or an otpauth URI;
@@ -108,9 +109,9 @@ and hold **Show in menu bar**, **Show Window** and **Copy Code**.
 **Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
 of each sign-in. **+** adds a vault and **-** removes the selected one. For the selected vault the
 page holds its settings and sign-in, with the sign-in state, **Sign In** and **Sign Out**, and
-**Save** and **Revert** at the bottom. Sign In and Sign Out are enabled for an OIDC vault alone,
-since the other methods sign in when a code is needed; an OIDC vault is signed in here, after
-each launch.
+**Save** and **Revert** at the bottom. Sign In and Sign Out work for every sign-in method; the
+methods other than OIDC also sign in when a code is needed, and an OIDC vault is signed in here,
+after each launch.
 
 ## Adding an account
 

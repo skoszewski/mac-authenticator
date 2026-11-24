@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 - 2026-11-24 08:02:16 +0100
+
+fix: the app made by make opens in Finder, the Accounts list shows where each account is stored,
+the dot of a vault shows its sign-in state, and every vault can sign in and out.
+
+- The bundle is assembled aside and moved into dist whole, so Finder no longer shows the new app
+  with a no-entry sign.
+- Each account of the Accounts list has a subtitle with its store, Keychain or Vault: and the name
+  of the vault. The details of the account show it as Store.
+- The dot before a vault in the Vaults list is smaller and has the color of the sign-in state:
+  green when signed in, yellow while signing in, red after a failure and gray when signed out.
+- Sign In and Sign Out of a vault are enabled for every sign-in method again, not for OIDC alone.
+
 ## 0.3.0 - 2026-11-24 07:41:04 +0100
 
 feat: several Vault servers, each a vault with its own sign-in, managed in a new Settings window
