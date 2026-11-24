@@ -9,6 +9,8 @@ struct MacAuthenticatorApp: App {
     private let windows: CodeWindows
 
     init() {
+        // Sets the policy of the Info.plist's LSUIElement, which an unbundled run lacks.
+        NSApplication.shared.setActivationPolicy(.accessory)
         let store = AccountStore()
         _store = State(initialValue: store)
         windows = CodeWindows(store: store)
@@ -55,10 +57,12 @@ struct MenuContent: View {
                 Menu(account.name) {
                     Button("Copy Code") {
                         DispatchQueue.main.async { [store] in
-                            do {
-                                try store.copyCode(of: account)
-                            } catch {
-                                Dialogs.showError("The code was not copied", error.localizedDescription)
+                            Task {
+                                do {
+                                    try await store.copyCode(of: account)
+                                } catch {
+                                    Dialogs.showError("The code was not copied", error.localizedDescription)
+                                }
                             }
                         }
                     }
@@ -88,6 +92,70 @@ struct MenuContent: View {
         Button("Add Account from QR Code in Clipboard") {
             DispatchQueue.main.async { [store] in
                 Dialogs.addAccountFromClipboard(to: store)
+            }
+        }
+
+        Divider()
+        Menu("Vault") {
+            switch store.vault.status {
+            case .notConfigured:
+                Text("Not configured")
+            case .signedOut:
+                Text("Signed out")
+            case .signingIn:
+                Text("Signing in...")
+            case .signedIn:
+                Text("Signed in")
+            case let .failed(message):
+                Text(message)
+            }
+            Divider()
+            Button("Sign In to Vault") {
+                DispatchQueue.main.async { [store] in
+                    Task {
+                        do {
+                            try await store.signInToVault()
+                        } catch is CancellationError {
+                        } catch {
+                            Dialogs.showError("Vault sign-in failed", error.localizedDescription)
+                        }
+                    }
+                }
+            }
+            .disabled(store.vault.configuration == nil || store.vault.status == .signingIn)
+            Button("Sign Out of Vault") {
+                store.signOutOfVault()
+            }
+            .disabled(store.vault.status == .notConfigured || store.vault.status == .signedOut)
+            Divider()
+            Button("Add Vault Key...") {
+                DispatchQueue.main.async { [store] in
+                    Task {
+                        await Dialogs.addVaultKey(to: store)
+                    }
+                }
+            }
+            .disabled(store.vault.configuration == nil)
+            Button("Generate Vault Key...") {
+                DispatchQueue.main.async { [store] in
+                    Task {
+                        await Dialogs.generateVaultKey(to: store)
+                    }
+                }
+            }
+            .disabled(store.vault.configuration == nil)
+            Button("Import Vault Key...") {
+                DispatchQueue.main.async { [store] in
+                    Task {
+                        await Dialogs.importVaultKey(to: store)
+                    }
+                }
+            }
+            .disabled(store.vault.configuration == nil)
+            Button("Vault Settings...") {
+                DispatchQueue.main.async { [store] in
+                    Dialogs.vaultSettings(for: store)
+                }
             }
         }
 

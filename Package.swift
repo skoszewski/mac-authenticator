@@ -7,7 +7,9 @@ let package = Package(
     platforms: [.macOS(.v27)],
     targets: [
         .target(name: "TOTP"),
-        .executableTarget(name: "MacAuthenticator", dependencies: ["TOTP"]),
+        .target(name: "Vault", dependencies: ["TOTP"]),
+        .executableTarget(name: "MacAuthenticator", dependencies: ["TOTP", "Vault"]),
         .testTarget(name: "TOTPTests", dependencies: ["TOTP"]),
+        .testTarget(name: "VaultTests", dependencies: ["Vault", "TOTP"]),
     ]
 )

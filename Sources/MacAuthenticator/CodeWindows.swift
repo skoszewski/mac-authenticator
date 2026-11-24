@@ -77,15 +77,18 @@ struct CodeView: View {
                             .monospacedDigit()
                             .frame(width: 32, alignment: .trailing)
                         Button("Copy") {
-                            do {
-                                try store.copyCode(of: account)
-                            } catch {
-                                Dialogs.showError("The code was not copied", error.localizedDescription)
+                            Task {
+                                do {
+                                    try await store.copyCode(of: account)
+                                } catch {
+                                    Dialogs.showError("The code was not copied", error.localizedDescription)
+                                }
                             }
                         }
                     }
                 } else {
-                    Text(store.secretErrors[accountID] ?? "The secret is not read.")
+                    Text(store.secretErrors[accountID]
+                         ?? (store.vaultKeys[accountID] == nil ? "The secret is not read." : "The code is fetched from Vault."))
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }

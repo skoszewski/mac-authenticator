@@ -2,13 +2,16 @@
 #
 #   make            check the TOTP code and write dist/Mac Authenticator.app (target app)
 #   make build      build the app's executable
-#   make test       run the tests of the TOTP library
+#   make test       run the tests of the TOTP and Vault libraries
 #   make clean      remove the build products and dist/
+#
+# The Vault tests start an in-memory "vault server -dev"; the vault binary must be on PATH, or
+# named by VAULT_BINARY. VAULT_TEST_PORT changes the server's port, 18200 by default.
 #
 # SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. The active developer
 # directory must be Xcode's, whose actool compiles Resources/AppIcon.icon.
 
-VERSION = 0.1.0
+VERSION = 0.2.0
 SIGN_IDENTITY = -
 APP = dist/Mac Authenticator.app
 

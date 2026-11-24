@@ -1,3 +1,5 @@
 /.build/
 /.swiftpm/
 /dist/
+/.vault-data
+vault.secret

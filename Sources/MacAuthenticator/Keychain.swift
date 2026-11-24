@@ -99,4 +99,51 @@ enum Keychain {
             throw Failure(operation: "remove the account", status: status)
         }
     }
+
+    /// The Vault credential is the one item of its own service, so listing the accounts never
+    /// returns it.
+    private static func vaultQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service + ".vault",
+            kSecAttrAccount as String: "credential",
+        ]
+    }
+
+    /// The Vault token, password or SecretID, or nil when none is stored.
+    static func vaultCredential() throws -> String? {
+        var query = vaultQuery()
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess, let data = result as? Data, let credential = String(data: data, encoding: .utf8) else {
+            throw Failure(operation: "read the Vault credential", status: status)
+        }
+        return credential
+    }
+
+    /// Replaces the stored Vault credential.
+    static func setVaultCredential(_ credential: String) throws {
+        try deleteVaultCredential()
+        var attributes = vaultQuery()
+        attributes[kSecAttrLabel as String] = "Mac Authenticator Vault"
+        attributes[kSecAttrDescription as String] = "Mac Authenticator Vault credential"
+        attributes[kSecValueData as String] = Data(credential.utf8)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw Failure(operation: "store the Vault credential", status: status)
+        }
+    }
+
+    /// Deletes the Vault credential; one already gone is no failure.
+    static func deleteVaultCredential() throws {
+        let status = SecItemDelete(vaultQuery() as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(operation: "remove the Vault credential", status: status)
+        }
+    }
 }

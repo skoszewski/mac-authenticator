@@ -3,7 +3,9 @@
 ## The menu is a SwiftUI MenuBarExtra with an observable store
 
 The menu is `MenuBarExtra` in the `.menu` style, the way the menu of serve-markdown is built,
-and `LSUIElement` keeps the app out of the Dock. The state is `AccountStore`, an `@Observable`
+and `LSUIElement` keeps the app out of the Dock. The app also sets the accessory activation
+policy at launch, since a run from Xcode has no bundle and so no `Info.plist`; without the
+policy the dialogs do not take the keyboard. The state is `AccountStore`, an `@Observable`
 class owned by the `App` as `@State` and passed to the menu, the menu bar label and the code
 windows, which redraw when the properties they read change.
 
@@ -88,6 +90,60 @@ AppIcon` and `--compile` into the bundle's `Resources`, which writes `Assets.car
 `CFBundleIconFile`, into the bundle's `Info.plist` with `PlistBuddy`. `actool` ships with Xcode
 alone, so the build needs Xcode as the active developer directory; the `.icon` and its layers
 are the icon's only sources in the repository.
+
+## Vault keys are generated or imported only under a new name
+
+`POST <mount>/keys/<key>` replaces the secret of a key that exists, which would silently break
+every account and authenticator using it. The app reads the key first and refuses a name that
+is taken. Generated keys answer with `barcode`, a base64 PNG QR code, and `url`, an otpauth
+URI; both are shown once and never stored, since Vault does not return the secret again. An
+import is limited to what Vault keeps, SHA1, SHA256 or SHA512 with 6 or 8 digits, and is
+refused before the call, so no key is stored that the app could not show. A failure to add the
+account after Vault holds the key is reported, and does not repeat the write.
+
+## Vault codes are fetched, never computed
+
+An account of the Vault TOTP engine has no secret in the app: the code comes from
+`GET <mount>/code/<key>`, once for each period of each shown account, at the whole second the
+period changes. The engine's answer holds the code alone, so the algorithm, digits, period and
+issuer are read once, when the key is added, from `GET <mount>/keys/<key>`, and kept with the
+account in the same `algorithm=...&digits=...&period=...` form as a keychain item. A code is
+kept with the period count it was fetched for and is shown for that period alone, so a stale
+code is never shown; a failed fetch is not repeated within its period.
+
+## Vault accounts are in the user defaults, the credential is one keychain item
+
+A Vault account holds nothing secret, only the name of its key, so it is a record in the user
+defaults and has no keychain item. The one credential of the connection, a token, password or
+SecretID, is a generic password item of its own service, `<service>.vault`, so that listing the
+accounts, which reads the attributes of every item of the main service, never meets it.
+Switching to OIDC deletes it.
+
+## The OIDC token is kept in memory and the sign-in is explicit
+
+The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
+the resulting Vault token in memory alone: a sign-in is repeated after each launch and when the
+token ends. The browser is opened from Sign In to Vault only, never because a code was needed,
+so a window opening in the background cannot start a login nobody expects. The other methods
+sign in by themselves, since they need no user.
+
+The redirect is received by a listener on the loopback interface, as `vault login -method=oidc`
+does it: the redirect URI is `http://localhost:<port>/oidc/callback`, 8250 by default, which the
+role's `allowed_redirect_uris` must hold. The listener answers one request and stops. The state
+of the authorisation URL is compared with the state of the redirect before the code is passed
+to Vault.
+
+## Vault is reached over HTTPS and tested against a dev server
+
+Requests go through `URLSession`, so App Transport Security and the system trust store apply;
+`NSAllowsLocalNetworking` allows plain HTTP to local addresses alone, for a dev server.
+
+`VaultTests` start `vault server -dev`, which keeps its storage in memory, once for the whole
+suite, through a suite trait that provides the test scope, and configure it through its HTTP
+API with plain `URLSession` calls, apart from the client under test. The `vault` binary is a
+requirement of the tests, and a missing one fails them. The namespace header is checked on the
+request alone, since namespaces exist only in Vault Enterprise. The exchange of the code with
+an identity provider needs a browser sign-in and is checked by hand.
 
 ## QR codes are read with Vision
 

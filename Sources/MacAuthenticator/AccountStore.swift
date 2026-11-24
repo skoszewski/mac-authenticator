@@ -18,12 +18,37 @@ enum StoreError: LocalizedError {
     }
 }
 
+/// An account whose codes Vault makes: the account's parameters and the name of its key.
+private struct VaultRecord: Codable {
+    var id: UUID
+    var name: String
+    var issuer: String?
+    var parameters: String
+    var key: String
+    var added: Date
+}
+
+/// A code fetched from Vault, with the period count it is valid for.
+private struct VaultCode {
+    var code: String
+    var counter: Int
+}
+
 /// The registered accounts, the secrets of those whose codes are shown, and the clock the codes
 /// are shown for.
 @MainActor
 @Observable
 final class AccountStore {
     private(set) var accounts: [Account] = []
+    let vault = VaultSession()
+    /// The Vault key of each account whose codes Vault makes.
+    private(set) var vaultKeys: [UUID: String] = [:]
+    private var vaultCodes: [UUID: VaultCode] = [:]
+    @ObservationIgnored private var vaultRecords: [VaultRecord] = UserDefaults.standard.data(forKey: "vaultAccounts")
+        .flatMap { try? JSONDecoder().decode([VaultRecord].self, from: $0) } ?? []
+    /// The accounts being fetched, and the period count of the last failed fetch of each.
+    @ObservationIgnored private var vaultFetching: Set<UUID> = []
+    @ObservationIgnored private var vaultFailures: [UUID: Int] = [:]
     /// Why the keychain could not be listed; changes are refused while it is set.
     private(set) var loadError: String?
     /// The current time, advanced at each whole second.
@@ -56,6 +81,7 @@ final class AccountStore {
         let timer = Timer(fire: start, interval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.now = Date()
+                self?.refreshVaultCodes()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -67,7 +93,12 @@ final class AccountStore {
     func reload() {
         do {
             let order = UserDefaults.standard.stringArray(forKey: "accountOrder") ?? []
-            let listed = try Keychain.accounts()
+            let vaultListed = vaultRecords.compactMap { record in
+                (try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters))
+                    .map { Keychain.Listed(account: $0, created: record.added) }
+            }
+            vaultKeys = Dictionary(uniqueKeysWithValues: vaultRecords.map { ($0.id, $0.key) })
+            let listed = try Keychain.accounts() + vaultListed
             accounts = listed.sorted { first, second in
                 let firstIndex = order.firstIndex(of: first.account.id.uuidString) ?? Int.max
                 let secondIndex = order.firstIndex(of: second.account.id.uuidString) ?? Int.max
@@ -84,23 +115,47 @@ final class AccountStore {
 
     /// Adds the account's keychain item and appends it to the list, refusing a name already in it.
     func add(_ new: NewAccount) throws {
-        guard loadError == nil else {
-            throw StoreError.notLoaded
-        }
-        if accounts.contains(where: { $0.name.caseInsensitiveCompare(new.account.name) == .orderedSame }) {
-            throw StoreError.duplicateName(new.account.name)
-        }
+        try checkCanAdd(named: new.account.name)
         try Keychain.add(new)
         accounts.append(new.account)
         saveOrder()
     }
 
-    /// Deletes the account's keychain item, and with it its secret.
+    /// Adds an account whose codes Vault makes from the key; nothing secret is kept for it.
+    func addVaultAccount(_ account: Account, key: String) throws {
+        try checkCanAdd(named: account.name)
+        vaultRecords.append(VaultRecord(id: account.id, name: account.name, issuer: account.issuer,
+                                        parameters: account.parameters, key: key, added: Date()))
+        saveVaultRecords()
+        vaultKeys[account.id] = key
+        accounts.append(account)
+        saveOrder()
+    }
+
+    /// Refuses a change while the keychain is not listed, and a name an account has already.
+    private func checkCanAdd(named name: String) throws {
+        guard loadError == nil else {
+            throw StoreError.notLoaded
+        }
+        if accounts.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            throw StoreError.duplicateName(name)
+        }
+    }
+
+    /// Deletes the account's keychain item, and with it its secret; a Vault account's entry is
+    /// deleted, and its key stays in Vault.
     func remove(_ account: Account) throws {
         guard loadError == nil else {
             throw StoreError.notLoaded
         }
-        try Keychain.delete(account.id)
+        if vaultKeys[account.id] == nil {
+            try Keychain.delete(account.id)
+        } else {
+            vaultRecords.removeAll { $0.id == account.id }
+            saveVaultRecords()
+            vaultKeys[account.id] = nil
+            vaultCodes[account.id] = nil
+        }
         accounts.removeAll { $0.id == account.id }
         saveOrder()
         openWindowIDs.remove(account.id)
@@ -129,17 +184,82 @@ final class AccountStore {
         updateSecrets()
     }
 
-    /// The current code of a shown account, or nil when its secret is not held.
+    /// The current code of a shown account, or nil when its secret is not held, or its code is not
+    /// yet fetched from Vault.
     func code(of account: Account) -> String? {
-        secrets[account.id].map { account.code(secret: $0, at: now) }
+        if vaultKeys[account.id] != nil {
+            return vaultCodes[account.id].flatMap { $0.counter == counter(of: account, at: now) ? $0.code : nil }
+        }
+        return secrets[account.id].map { account.code(secret: $0, at: now) }
     }
 
-    /// Reads the account's secret and puts its current code in the clipboard, keeping no secret.
-    func copyCode(of account: Account) throws {
-        let secret = try secrets[account.id] ?? Keychain.secret(of: account.id)
+    private func counter(of account: Account, at date: Date) -> Int {
+        Int(date.timeIntervalSince1970) / account.period
+    }
+
+    /// Puts the account's current code in the clipboard: a code computed from the secret, which
+    /// is read and not kept, or one fetched from Vault.
+    func copyCode(of account: Account) async throws {
+        let code: String
+        if let key = vaultKeys[account.id] {
+            code = try await vault.authorized { try await $0.code(key: key) }
+        } else {
+            let secret = try secrets[account.id] ?? Keychain.secret(of: account.id)
+            code = account.code(secret: secret, at: Date())
+        }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(account.code(secret: secret, at: Date()), forType: .string)
+        pasteboard.setString(code, forType: .string)
+    }
+
+    /// Fetches the codes of the shown Vault accounts that have none for the present period. A
+    /// failed fetch is not repeated within its period.
+    private func refreshVaultCodes() {
+        for account in accounts where shownIDs.contains(account.id) {
+            guard let key = vaultKeys[account.id] else {
+                continue
+            }
+            let counter = counter(of: account, at: now)
+            guard vaultCodes[account.id]?.counter != counter, vaultFailures[account.id] != counter,
+                  vaultFetching.insert(account.id).inserted else {
+                continue
+            }
+            let id = account.id
+            Task {
+                defer {
+                    vaultFetching.remove(id)
+                }
+                do {
+                    let code = try await vault.authorized { try await $0.code(key: key) }
+                    vaultCodes[id] = VaultCode(code: code, counter: counter)
+                    secretErrors[id] = nil
+                } catch {
+                    vaultFailures[id] = counter
+                    secretErrors[id] = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Forgets the Vault codes and failures, so the shown accounts fetch again at once.
+    func vaultConnectionChanged() {
+        vaultCodes = [:]
+        vaultFailures = [:]
+        secretErrors = secretErrors.filter { vaultKeys[$0.key] == nil }
+        refreshVaultCodes()
+    }
+
+    /// Signs in to Vault, so the shown codes are fetched.
+    func signInToVault() async throws {
+        defer {
+            vaultConnectionChanged()
+        }
+        try await vault.signIn()
+    }
+
+    func signOutOfVault() {
+        vault.signOut()
+        vaultConnectionChanged()
     }
 
     /// Registers the app as a login item or unregisters it, opening the Login Items settings
@@ -161,17 +281,26 @@ final class AccountStore {
     /// Reads the secrets of the accounts newly shown and drops those of the accounts no longer
     /// shown, with their read errors.
     private func updateSecrets() {
-        let ids = Set(accounts.map(\.id))
-        let shown = openWindowIDs.union(menuBarAccountID.map { [$0] } ?? []).intersection(ids)
+        let shown = shownIDs
         secrets = secrets.filter { shown.contains($0.key) }
         secretErrors = secretErrors.filter { shown.contains($0.key) }
-        for id in shown where secrets[id] == nil && secretErrors[id] == nil {
+        for id in shown where vaultKeys[id] == nil && secrets[id] == nil && secretErrors[id] == nil {
             do {
                 secrets[id] = try Keychain.secret(of: id)
             } catch {
                 secretErrors[id] = error.localizedDescription
             }
         }
+        refreshVaultCodes()
+    }
+
+    /// The registered accounts whose codes are shown: in an open window or beside the menu bar icon.
+    private var shownIDs: Set<UUID> {
+        openWindowIDs.union(menuBarAccountID.map { [$0] } ?? []).intersection(accounts.map(\.id))
+    }
+
+    private func saveVaultRecords() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(vaultRecords), forKey: "vaultAccounts")
     }
 
     private func saveOrder() {
