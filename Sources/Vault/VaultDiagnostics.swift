@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// The result of one step of a connection test.
 public struct VaultCheck: Equatable, Sendable {
@@ -35,7 +36,9 @@ public enum VaultDiagnostics {
         // Address
         do {
             let request = try client.makeRequest("GET", "sys/health")
-            if request.url?.scheme?.lowercased() == "http" {
+            let plain = request.url?.scheme?.lowercased() == "http"
+            let local = plain ? await resolvesToLoopback(request.url?.host ?? "") : false
+            if plain, !local {
                 checks.append(VaultCheck(step: "Address", outcome: .warning,
                                          message: "The address uses plain HTTP; the credential and the codes cross the network unencrypted.",
                                          problem: nil))
@@ -110,6 +113,44 @@ public enum VaultDiagnostics {
                                      problem: VaultProblem(error)))
         }
         return checks
+    }
+
+    /// Whether the host name resolves to loopback addresses alone; false when it does not resolve.
+    static func resolvesToLoopback(_ host: String) async -> Bool {
+        await Task.detached {
+            var hints = addrinfo()
+            hints.ai_family = AF_UNSPEC
+            hints.ai_socktype = SOCK_STREAM
+            var result: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+                return false
+            }
+            defer {
+                freeaddrinfo(first)
+            }
+            var found = false
+            for entry in sequence(first: first, next: { $0.pointee.ai_next }) {
+                guard let address = entry.pointee.ai_addr else {
+                    return false
+                }
+                switch Int32(address.pointee.sa_family) {
+                case AF_INET:
+                    let raw = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                    guard UInt32(bigEndian: raw.s_addr) >> 24 == 127 else {
+                        return false
+                    }
+                case AF_INET6:
+                    let raw = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+                    guard IPv6Address(withUnsafeBytes(of: raw) { Data($0) })?.isLoopback == true else {
+                        return false
+                    }
+                default:
+                    return false
+                }
+                found = true
+            }
+            return found
+        }.value
     }
 
     /// A setting or credential the method needs and the form leaves empty.

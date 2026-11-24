@@ -182,7 +182,7 @@ struct VaultAgainstDevServerTests {
         let server = try server()
         let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: server.rootToken)
         #expect(checks.map(\.step) == ["Address", "Server", "Sign-in", "TOTP engine"])
-        #expect(checks.map(\.outcome) == [.warning, .passed, .passed, .passed])
+        #expect(checks.map(\.outcome) == [.passed, .passed, .passed, .passed])
     }
 
     @Test func aConnectionTestNamesTheStepOfAnUnreachableServer() async throws {
@@ -221,7 +221,25 @@ struct VaultAgainstDevServerTests {
     @Test func aConnectionTestSkipsTheSignInOfOIDC() async throws {
         let server = try server()
         let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .oidc), credential: nil)
-        #expect(checks.map(\.outcome) == [.warning, .passed, .skipped, .skipped])
+        #expect(checks.map(\.outcome) == [.passed, .passed, .skipped, .skipped])
+    }
+
+    @Test(arguments: ["localhost", "127.0.0.1", "127.1.2.3", "::1"])
+    func aHostOfThisMacResolvesToLoopback(host: String) async {
+        #expect(await VaultDiagnostics.resolvesToLoopback(host))
+    }
+
+    @Test(arguments: ["192.168.1.10", "10.0.0.1", "8.8.8.8", "2001:db8::1", "vault.invalid"])
+    func aHostOfAnotherMachineDoesNotResolveToLoopback(host: String) async {
+        #expect(!(await VaultDiagnostics.resolvesToLoopback(host)))
+    }
+
+    @Test func aConnectionTestWarnsOfPlainHTTPToAnotherHost() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, address: "http://vault.invalid:1"),
+                                                credential: server.rootToken)
+        #expect(checks.first?.step == "Address")
+        #expect(checks.first?.outcome == .warning)
     }
 
     @Test func aRevokedTokenIsDenied() async throws {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 - 2026-11-24 19:36:41 +0100
+
+fix: Test Connection does not warn of plain HTTP to an address that resolves to this Mac.
+
+- The address step of Test Connection warns that a plain http:// address sends the credential
+  and the codes unencrypted, except when the host name resolves to loopback addresses alone, such
+  as localhost, 127.0.0.1 or ::1.
+
 ## 0.4.0 - 2026-11-24 16:24:34 +0100
 
 feat: the app says what is wrong with a vault, in the menu bar, in Settings and in a
