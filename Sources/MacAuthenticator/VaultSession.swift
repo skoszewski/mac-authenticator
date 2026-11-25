@@ -74,7 +74,7 @@ final class VaultSession {
     @ObservationIgnored private var worked = false
     @ObservationIgnored private var token: VaultToken?
     @ObservationIgnored private var signInTask: Task<Void, Error>?
-    @ObservationIgnored private var listener: OIDCCallbackListener?
+    @ObservationIgnored private var signInWindow: OIDCSignInWindow?
 
     init(profile: VaultProfile) {
         self.profile = profile
@@ -90,9 +90,9 @@ final class VaultSession {
         signOut()
     }
 
-    /// Drops the token and stops a sign-in waiting for the browser.
+    /// Drops the token and closes a sign-in window that is open.
     func signOut() {
-        listener?.cancel()
+        signInWindow?.cancel()
         token = nil
         worked = false
         status = .signedOut
@@ -183,31 +183,28 @@ final class VaultSession {
         }
     }
 
-    /// Signs in through the browser: the identity provider redirects to a listener of this app.
+    /// Signs in in a window of the app, which takes the redirect of the identity provider itself.
     private func oidcLogin(_ configuration: VaultConfiguration, _ client: VaultClient) async throws -> VaultToken {
         let clientNonce = UUID().uuidString
-        let listener = try OIDCCallbackListener(port: configuration.oidcPort)
-        self.listener = listener
-        defer {
-            listener.cancel()
-            self.listener = nil
-        }
-        try await listener.start()
         let url = try await client.oidcAuthURL(role: configuration.oidcRole, redirectURI: configuration.oidcRedirectURI,
                                                clientNonce: clientNonce)
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let state = items.first(where: { $0.name == "state" })?.value,
-              let nonce = items.first(where: { $0.name == "nonce" })?.value else {
+              let nonce = items.first(where: { $0.name == "nonce" })?.value,
+              let redirect = URL(string: configuration.oidcRedirectURI) else {
             throw VaultError.oidc("Vault's authorisation URL holds no state or nonce.")
         }
-        NSWorkspace.shared.open(url)
-
-        let callback = try await listener.callback()
+        let window = OIDCSignInWindow()
+        signInWindow = window
+        defer {
+            signInWindow = nil
+        }
+        let callback = try await window.run(url: url, redirect: redirect, title: "Sign in to \(profile.name)")
         if let error = callback.error {
             throw VaultError.oidc(error)
         }
         guard let code = callback.code, callback.state == state else {
-            throw VaultError.oidc("The browser's answer does not belong to this sign-in.")
+            throw VaultError.oidc("The identity provider's answer does not belong to this sign-in.")
         }
         return try await client.oidcCallback(state: state, nonce: nonce, code: code, clientNonce: clientNonce)
     }
@@ -252,7 +249,7 @@ final class VaultSession {
     }
 
     /// A token Vault refuses is replaced once by a new sign-in, unless the token itself is the
-    /// credential or the sign-in is through the browser.
+    /// credential or the sign-in is OIDC.
     private func perform<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
         let first = try await validToken()
         do {

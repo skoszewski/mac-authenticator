@@ -129,7 +129,7 @@ account after Vault holds the key is reported, and does not repeat the write.
 ## Problems are classified once and shown where the user looks
 
 Every failure of a Vault call goes through `VaultProblem` in the library, which turns a
-`URLError`, a `VaultError`, a listener error or an app error that states its own problem into a
+`URLError`, a `VaultError` or an app error that states its own problem into a
 title, a detail and a suggestion. The raw system texts name neither the cause nor the next step,
 and one mapping keeps every surface saying the same thing. The mapping is in the library so
 that it is tested without the app.
@@ -194,31 +194,56 @@ without it.
 
 The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
 the resulting Vault token in memory alone: a sign-in is repeated after each launch and when the
-token ends. The browser is opened from Sign In to Vault only, never because a code was needed,
+token ends. The sign-in window is opened from Sign In only, never because a code was needed,
 so a window opening in the background cannot start a login nobody expects. The other methods
 sign in by themselves, since they need no user.
 
-The redirect is received by a listener on the loopback interface, as `vault login -method=oidc`
-does it: the redirect URI is `http://localhost:<port>/oidc/callback`, 8250 by default, which the
-role's `allowed_redirect_uris` must hold. The listener answers one request and stops. The state
-of the authorisation URL is compared with the state of the redirect before the code is passed
-to Vault.
+The redirect URI is `http://localhost:<port>/oidc/callback`, 8250 by default, which the role's
+`allowed_redirect_uris` must hold, as for `vault login -method=oidc`. The state of the
+authorisation URL is compared with the state of the redirect before the code is passed to Vault.
+
+## OIDC signs in in an embedded web view the app controls
+
+The identity provider's pages open in a window of the app, a `WKWebView`, and not in the user's
+browser: a login page in another app, with no visible tie to the Authenticator, confuses the user,
+and a browser that is sent to `http://localhost` raises unsecured connection prompts. The app
+takes the redirect itself: the navigation policy cancels the navigation to the redirect URI and
+reads the state and the code from its address, so nothing listens on a port, nothing loads from
+localhost, and two OIDC vaults can use one redirect port, which only builds the URI.
+
+The policy is a pure type of the library, `OIDCSignInPolicy`, so it is tested without WebKit: the
+redirect ends the sign-in, a page over HTTPS loads, and plain HTTP, `data:`, `file:`,
+`javascript:` and custom schemes are refused with the reason shown in the window. A page that
+opens a window loads in the same view. The header names the host of the page at all times, which
+is the user's only check of where a password goes. Certificate trust is the system's, so the
+user's own CA applies and WebKit shows no certificate pop-up; a failed load shows an error line.
+
+The provider's cookies live in a persistent data store of the app, identified by a fixed UUID and
+apart from Safari's, so a provider's session survives and a sign-in after a launch is often one
+click; the cost is that the session is kept on disk in the app's container.
+
+An embedded view has costs that the choice accepts: RFC 8252 recommends an external user agent
+for native apps, the view has no Safari session, no Kerberos or enterprise single sign-on
+extension and no platform passkeys without a browser entitlement, some providers refuse embedded
+views, and the app can in principle see what is typed in it. A provider for which this matters
+needs the browser, which an `ASWebAuthenticationSession` would give.
 
 ## Vault is reached through URLSession, over HTTPS or plain HTTP, and tested against a dev server
 
 Requests go through `URLSession`, so the system trust store applies. App Transport Security is
 off for the app, `NSAllowsArbitraryLoads` in `Resources/Info.plist`, so a Vault at any address can
 be reached over plain HTTP, such as one on a private network without TLS, and the address of a
-Vault is a setting that no build knows. The app makes no other connections; the OIDC sign-in is
-made by the browser. The credential and the codes cross the network unencrypted over HTTP, which
-is the user's choice for that Vault; an HTTPS address keeps the checks of the system trust store.
+Vault is a setting that no build knows. The app makes no other connections; the pages of the OIDC
+sign-in load in a web view, which ATS does not govern, and are limited to HTTPS by the app. The
+credential and the codes cross the network unencrypted over HTTP, which is the user's choice for
+that Vault; an HTTPS address keeps the checks of the system trust store.
 
 `VaultTests` start `vault server -dev`, which keeps its storage in memory, once for the whole
 suite, through a suite trait that provides the test scope, and configure it through its HTTP
 API with plain `URLSession` calls, apart from the client under test. The `vault` binary is a
 requirement of the tests, and a missing one fails them. The namespace header is checked on the
 request alone, since namespaces exist only in Vault Enterprise. The exchange of the code with
-an identity provider needs a browser sign-in and is checked by hand.
+an identity provider needs the sign-in window and is checked by hand.
 
 ## QR codes are read with Vision
 

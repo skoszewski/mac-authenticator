@@ -68,7 +68,8 @@ vectors of RFC 6238 Appendix B for SHA-1, SHA-256 and SHA-512 and with codes pri
 `Tests/VaultTests` run the Vault client against a dev server they start: the sign-in with a
 token, a password and an AppRole, renewing, listing and reading keys, the policy that denies
 listing, a revoked token, and codes that agree with the ones `TOTP` computes for the same
-secret; and the listener that receives the OIDC redirect.
+secret; and the rules that decide which pages of the OIDC sign-in window load and which address
+ends the sign-in.
 
 The app is signed ad hoc. `SIGN_IDENTITY` names another code signing identity from the
 keychain, for example a self-signed certificate made in Keychain Access:
@@ -199,10 +200,13 @@ The Vaults tab of the Settings window asks for:
   - **Username and password**: the user name is a setting and the password is kept in the
     keychain;
   - **AppRole**: the RoleID is a setting and the SecretID is kept in the keychain;
-  - **OIDC**: the role, and the port of the redirect listener, 8250 by default. Nothing is kept
-    in the keychain: Sign In to Vault opens the browser and the identity provider signs the
-    user in. The token lives in memory, so the sign-in is repeated after each launch and when
-    the token ends.
+  - **OIDC**: the role, and the port of the redirect URI, 8250 by default. Nothing is kept in
+    the keychain: Sign In opens a window of the app with the identity provider's pages, and the
+    provider signs the user in there. The window shows the host of the page, loads pages over
+    HTTPS alone, and ends the sign-in itself when the provider redirects to the redirect URI, so
+    nothing listens on the port and no page is loaded from it. The provider's cookies are kept in
+    the app's own store, apart from Safari's, so a later sign-in is often one click. The token
+    lives in memory, so the sign-in is repeated after each launch and when the token ends.
 
 An empty credential field keeps the credential stored before. A profile is one generic password
 item of the service `pl.waw.koszewscy.MacAuthenticator.vault`, labelled with the profile name:
@@ -210,9 +214,7 @@ its attributes hold the settings and its data holds the credential, empty for OI
 accounts taken from Vault are in the app's user defaults, each with its profile and key.
 Removing a profile deletes its item and its accounts; the keys stay in Vault.
 
-Profiles are signed in independently, so accounts of several servers show codes at once. Two
-OIDC profiles with the same callback port cannot sign in at the same moment; give them
-different ports.
+Profiles are signed in independently, so accounts of several servers show codes at once.
 
 With a token, password or AppRole the app signs in when a code is needed, and again when Vault
 refuses the token; a renewable token is renewed when half of its lease has passed. A code that
@@ -248,7 +250,7 @@ A failure is said in words: what is wrong, what happened, and what to do about i
 - **Test Connection** on the vault's page checks the settings as typed, without saving them:
   the address, whether the server answers and is unsealed, the sign-in, and the TOTP engine.
   Each step shows passed, warning, failed or skipped, and the first failure says what to do. An
-  OIDC vault skips the sign-in and the engine, which need the browser.
+  OIDC vault skips the sign-in and the engine, which need the sign-in window.
 - When a vault that worked fails, a macOS notification names it; clicking it opens Settings on
   the vault. A vault that keeps failing notifies once, until it works again. The permission is
   asked when the first vault is saved, and the app bundle from `make` posts the notifications;

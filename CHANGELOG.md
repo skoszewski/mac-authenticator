@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0 - 2026-11-25 11:29:39 +0100
+
+feat: an OIDC vault signs in in a window of the app, which takes the identity provider's redirect
+itself, instead of the browser.
+
+- Sign In to an OIDC vault opens a window with the identity provider's pages. It shows the host of
+  the page, loads pages over HTTPS only, and closes itself when the sign-in is done; closing it
+  cancels the sign-in without a problem.
+- The redirect to the redirect URI is taken inside the window, so nothing listens on a port, no
+  page is loaded from localhost, and two OIDC vaults can use the same port.
+- The identity provider's cookies are kept in the app's own store, apart from Safari's, so a later
+  sign-in is often one click.
+- A page that fails to load, such as one with an untrusted certificate, is explained in the
+  window, with no system pop-up.
+- The Callback port setting is called Redirect URI port; it only builds the redirect URI that the
+  OIDC role allows, so no vault needs reconfiguring.
+
 ## 0.5.0 - 2026-11-25 11:08:25 +0100
 
 feat: Vault Setup enables the TOTP engine of a vault and writes the policies totp_creator and

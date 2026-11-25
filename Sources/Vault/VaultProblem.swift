@@ -1,5 +1,4 @@
 import Foundation
-import Network
 
 /// An error that states its own problem, for the errors of the layers above the library.
 public protocol VaultProblemConvertible {
@@ -46,10 +45,6 @@ public struct VaultProblem: Equatable, Sendable {
             self = Self.problem(of: error)
         case let error as URLError:
             self = Self.problem(of: error)
-        case let NWError.posix(code) where code == .EADDRINUSE:
-            self = VaultProblem(kind: .network, title: "The callback port is in use",
-                                detail: "Another program, or another OIDC vault, listens on the callback port.",
-                                suggestion: "Choose another callback port in the vault's settings, and in the OIDC role's redirect URIs.")
         default:
             self = VaultProblem(kind: .other, title: "The operation failed", detail: error.localizedDescription,
                                 suggestion: "Try again. If it keeps failing, copy the details into a report.")
@@ -73,8 +68,8 @@ public struct VaultProblem: Equatable, Sendable {
             return VaultProblem(kind: .notSignedIn, title: "Not signed in", detail: "The vault has no sign-in.",
                                 suggestion: "Sign in from Settings > Vaults.")
         case let .oidc(message):
-            return VaultProblem(kind: .denied, title: "The browser sign-in failed", detail: message,
-                                suggestion: "Sign in again; check the OIDC role and the callback port.")
+            return VaultProblem(kind: .denied, title: "The OIDC sign-in failed", detail: message,
+                                suggestion: "Sign in again; check the OIDC role and its redirect URI.")
         case let .keyExists(name):
             return VaultProblem(kind: .other, title: "The key exists", detail: "The vault holds a key named \(name).",
                                 suggestion: "Choose another name.")

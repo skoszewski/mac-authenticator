@@ -81,7 +81,7 @@ public enum VaultDiagnostics {
         do {
             token = try await VaultClient.signIn(configuration: configuration, credential: credential)
             checks.append(VaultCheck(step: "Sign-in", outcome: token == nil ? .skipped : .passed,
-                                     message: token == nil ? "OIDC signs in in the browser, from the vault's page."
+                                     message: token == nil ? "OIDC signs in with Sign In on the vault's page."
                                                            : "Signed in with the \(configuration.authMethod.rawValue) method.",
                                      problem: nil))
         } catch {
@@ -92,7 +92,7 @@ public enum VaultDiagnostics {
 
         // TOTP engine
         guard let token else {
-            checks.append(VaultCheck(step: "TOTP engine", outcome: .skipped, message: "Needs a sign-in.", problem: nil))
+            checks.append(VaultCheck(step: "TOTP engine", outcome: .skipped, message: "Needs a sign-in first.", problem: nil))
             return checks
         }
         do {

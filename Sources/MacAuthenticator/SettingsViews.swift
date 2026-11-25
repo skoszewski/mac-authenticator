@@ -313,7 +313,7 @@ extension AuthMethod {
         case .approle:
             return "AppRole"
         case .oidc:
-            return "OIDC (browser)"
+            return "OIDC"
         }
     }
 
@@ -370,7 +370,7 @@ struct VaultProfileDraft: Equatable {
             throw SessionError.missingSetting("Vault address")
         }
         guard let port = Int(oidcPort), (1 ... 65535).contains(port) else {
-            throw SessionError.invalidSetting("Callback port")
+            throw SessionError.invalidSetting("Redirect URI port")
         }
         if method == .userpass, text(username) == nil {
             throw SessionError.missingSetting("Username")
@@ -479,7 +479,7 @@ private struct VaultProfileEditor: View {
                 }
                 if draft.method == .oidc {
                     TextField("OIDC role", text: $draft.oidcRole, prompt: Text("Empty for the default role"))
-                    TextField("Callback port", text: $draft.oidcPort)
+                    TextField("Redirect URI port", text: $draft.oidcPort)
                 } else {
                     SecureField(draft.method.credentialLabel, text: $draft.credential,
                                 prompt: Text(session == nil ? "" : "Empty keeps the stored one"))

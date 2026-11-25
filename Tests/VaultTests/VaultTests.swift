@@ -362,41 +362,60 @@ struct VaultAgainstDevServerTests {
     }
 }
 
-@Suite struct OIDCCallbackTests {
-    @Test func parsesTheRequestLine() {
-        let request = "GET /oidc/callback?state=abc&code=x%20y HTTP/1.1\r\nHost: localhost:8250\r\n\r\n"
-        #expect(OIDCCallbackListener.parse(request: request) == OIDCCallback(state: "abc", code: "x y", error: nil))
+@Suite struct OIDCSignInPolicyTests {
+    private let policy = OIDCSignInPolicy(redirect: URL(string: "http://localhost:8250/oidc/callback")!)
+
+    private func decide(_ address: String?) -> OIDCNavigation {
+        policy.decide(address.flatMap { URL(string: $0) })
     }
 
-    @Test func parsesAProviderError() {
-        let request = "GET /oidc/callback?error=access_denied&error_description=No%20way&state=s HTTP/1.1\r\n\r\n"
-        #expect(OIDCCallbackListener.parse(request: request)?.error == "No way")
+    @Test func theRedirectEndsTheSignInWithItsCallback() {
+        #expect(decide("http://localhost:8250/oidc/callback?state=abc&code=x%20y")
+            == .callback(OIDCCallback(state: "abc", code: "x y", error: nil)))
     }
 
-    @Test(arguments: ["GET /favicon.ico HTTP/1.1\r\n\r\n", "POST /oidc/callback HTTP/1.1\r\n\r\n", ""])
-    func ignoresOtherRequests(request: String) {
-        #expect(OIDCCallbackListener.parse(request: request) == nil)
+    @Test func aProviderErrorIsCarriedByTheCallback() {
+        let navigation = decide("http://localhost:8250/oidc/callback?error=access_denied&error_description=No%20way&state=s")
+        #expect(navigation == .callback(OIDCCallback(state: "s", code: nil, error: "No way")))
+        #expect(decide("http://localhost:8250/oidc/callback?error=access_denied")
+            == .callback(OIDCCallback(state: nil, code: nil, error: "access_denied")))
     }
 
-    @Test func receivesTheBrowsersRedirect() async throws {
-        let listener = try OIDCCallbackListener(port: 18250)
-        try await listener.start()
-        defer { listener.cancel() }
-
-        let url = try #require(URL(string: "http://localhost:18250/oidc/callback?state=s1&code=c1"))
-        let (data, response) = try await URLSession.shared.data(from: url)
-        #expect((response as? HTTPURLResponse)?.statusCode == 200)
-        #expect(String(decoding: data, as: UTF8.self).contains("You can close this tab"))
-        #expect(try await listener.callback(timeout: .seconds(5)) == OIDCCallback(state: "s1", code: "c1", error: nil))
+    @Test func theHostOfTheRedirectIsComparedWithoutCase() {
+        #expect(decide("http://LOCALHOST:8250/oidc/callback?code=c") == .callback(OIDCCallback(state: nil, code: "c", error: nil)))
     }
 
-    @Test func timesOutWithoutARedirect() async throws {
-        let listener = try OIDCCallbackListener(port: 18251)
-        try await listener.start()
-        defer { listener.cancel() }
-        await #expect(throws: VaultError.self) {
-            try await listener.callback(timeout: .milliseconds(300))
+    @Test(arguments: [
+        "http://localhost:9999/oidc/callback?code=c",
+        "http://localhost:8250/other?code=c",
+        "http://127.0.0.1:8250/oidc/callback?code=c",
+        "http://evil.example.com:8250/oidc/callback?code=c",
+    ])
+    func aLookalikeOfTheRedirectIsNotTheCallback(address: String) {
+        guard case .block = decide(address) else {
+            Issue.record("\(address) was not blocked")
+            return
         }
+    }
+
+    @Test(arguments: ["https://login.example.com/authorize?x=1", "https://login.example.com:8443/", "about:blank"])
+    func aSecurePageLoads(address: String) {
+        #expect(decide(address) == .allow)
+    }
+
+    @Test(arguments: [
+        "http://login.example.com/authorize", "data:text/html,hello", "file:///etc/hosts",
+        "javascript:alert(1)", "macauthenticator://callback", "about:srcdoc", nil,
+    ] as [String?])
+    func anyOtherPageIsBlocked(address: String?) {
+        guard case .block = decide(address) else {
+            Issue.record("\(address ?? "no address") was not blocked")
+            return
+        }
+    }
+
+    @Test func aBlockedPlainHTTPPageIsNamed() {
+        #expect(decide("http://login.example.com/authorize") == .block("The page login.example.com is not served over HTTPS."))
     }
 }
 

@@ -395,8 +395,8 @@ struct EmptyValue: Error, VaultProblemConvertible {
 }
 
 extension VaultClient {
-    /// The token of a sign-in with the configured method and credential; nil for OIDC, which needs
-    /// the browser.
+    /// The token of a sign-in with the configured method and credential; nil for OIDC, which signs
+    /// in through the identity provider's pages.
     public static func signIn(configuration: VaultConfiguration, credential: String?) async throws -> VaultToken? {
         func required(_ value: String?, _ what: String) throws -> String {
             guard let value, !value.isEmpty else {
