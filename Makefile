@@ -8,7 +8,8 @@
 # The Vault tests start an in-memory "vault server -dev"; the vault binary must be on PATH, or
 # named by VAULT_BINARY. VAULT_TEST_PORT changes the server's port, 18200 by default.
 #
-# The bundle's version is that of the newest entry of CHANGELOG.md, read by tools/version.py.
+# The bundle's version is that of the newest entry of CHANGELOG.md, and its build number the
+# number of commits, both read by tools/version.py.
 #
 # SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. It is set in the
 # command line, or in the untracked Makefile.local. The active developer directory must be
@@ -18,6 +19,10 @@ PYTHON = python3
 VERSION := $(shell $(PYTHON) tools/version.py)
 ifeq ($(VERSION),)
 $(error tools/version.py found no version in CHANGELOG.md)
+endif
+BUILD := $(shell $(PYTHON) tools/version.py --build)
+ifeq ($(BUILD),)
+$(error tools/version.py found no build number)
 endif
 -include Makefile.local
 SIGN_IDENTITY ?= -
@@ -37,7 +42,7 @@ app: build
 	cp Resources/Info.plist "$(STAGE)/Contents/Info.plist"
 	/usr/libexec/PlistBuddy -c "Merge .build/AppIcon-partial.plist" "$(STAGE)/Contents/Info.plist"
 	plutil -replace CFBundleShortVersionString -string "$(VERSION)" "$(STAGE)/Contents/Info.plist"
-	plutil -replace CFBundleVersion -string "$(VERSION)" "$(STAGE)/Contents/Info.plist"
+	plutil -replace CFBundleVersion -string "$(BUILD)" "$(STAGE)/Contents/Info.plist"
 	plutil -lint "$(STAGE)/Contents/Info.plist"
 	codesign --force --sign "$(SIGN_IDENTITY)" "$(STAGE)"
 	codesign --verify --strict --verbose=2 "$(STAGE)"

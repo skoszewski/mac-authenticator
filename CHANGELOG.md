@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.3 - 2026-11-25 18:32:42 +0100
+
+fix: the About panel shows the build number of the app next to its version, not the version twice.
+
+- The bundle's build number is the number of commits, so the About panel shows, for example, 0.6.3
+  (15) and not 0.6.3 (0.6.3).
+
 ## 0.6.2 - 2026-11-25 18:29:28 +0100
 
 feat: the token of an OIDC sign-in is kept in the keychain, the Settings window can be reached with
