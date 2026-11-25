@@ -9,7 +9,7 @@
 # named by VAULT_BINARY. VAULT_TEST_PORT changes the server's port, 18200 by default.
 #
 # The bundle's version is that of the newest entry of CHANGELOG.md, and its build number the
-# number of commits, both read by tools/version.py.
+# id of the HEAD commit, both read by tools/version.py.
 #
 # SIGN_IDENTITY names the code signing identity, ad hoc (-) by default. It is set in the
 # command line, or in the untracked Makefile.local. The active developer directory must be

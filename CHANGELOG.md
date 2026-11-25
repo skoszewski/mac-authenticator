@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.4 - 2026-11-25 18:34:40 +0100
+
+fix: the build number the About panel shows is the id of the commit the app was built from.
+
+- The bundle's build number is the abbreviated id of the HEAD commit, as `git log --oneline` shows
+  it, not the number of commits; the About panel shows it after the version.
+
 ## 0.6.3 - 2026-11-25 18:32:42 +0100
 
 fix: the About panel shows the build number of the app next to its version, not the version twice.

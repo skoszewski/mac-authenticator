@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Print the version of the newest CHANGELOG.md entry, without a "-n" revision; with --build, print the
-build number, which is the number of commits in the history.
+build number, which is the abbreviated id of the HEAD commit, as git log --oneline shows it.
 
 The revision is left out, since a bundle version is three numbers: "## 0.4.0-2" prints 0.4.0. The
 Makefile takes the bundle's version from here, so the changelog is its only source; bin/changelog.py
@@ -21,10 +21,10 @@ CHANGELOG = ROOT / 'CHANGELOG.md'
 
 def build():
     try:
-        done = subprocess.run(['git', 'rev-list', '--count', 'HEAD'], cwd=ROOT, check=True,
+        done = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, check=True,
                               capture_output=True, text=True)
     except (OSError, subprocess.CalledProcessError) as error:
-        sys.exit(f'The build number is the number of commits, which git did not give: {error}')
+        sys.exit(f'The build number is the id of the HEAD commit, which git did not give: {error}')
     print(done.stdout.strip())
     return 0
 

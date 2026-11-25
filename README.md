@@ -325,8 +325,8 @@ that need them, both to a user who adds accounts and shows codes.
 The commit and the date in the heading mark the entry as released, so the next change needs a new
 entry with a new version; write new entries with a plain `## x.y.z` heading. The `Makefile` takes
 the version the bundle reports from the newest entry of `CHANGELOG.md`, through
-`tools/version.py`, without a `-n` revision, and the build number from the number of commits, so
-the About panel shows, for example, 0.6.2 (14).
+`tools/version.py`, without a `-n` revision, and the build number from the id of the HEAD
+commit, as `git log --oneline` shows it, so the About panel shows, for example, 0.6.3 (6eca9d0).
 
 ## Sibling project
 
