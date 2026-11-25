@@ -21,7 +21,7 @@ enum SessionError: LocalizedError {
         case let .invalidSetting(name):
             return "The Vault setting \(name) is not valid."
         case .missingCredential:
-            return "No Vault credential is stored; enter it in Vault Settings."
+            return "No Vault credential is stored."
         case let .missingSetting(name):
             return "The Vault setting \(name) is empty."
         }
@@ -33,13 +33,13 @@ extension SessionError: VaultProblemConvertible {
         switch self {
         case .missingCredential:
             return VaultProblem(kind: .credential, title: "No credential is stored", detail: "The keychain holds no token, password or SecretID for this vault.",
-                                suggestion: "Enter it in Settings > Vaults and save.")
+                                suggestion: "Store a credential for the vault.")
         case let .missingSetting(name):
             return VaultProblem(kind: .address, title: "A setting is empty", detail: "\(name) is empty.",
-                                suggestion: "Fill it in Settings > Vaults and save.")
+                                suggestion: "Give the vault a value for it.")
         case let .invalidSetting(name):
             return VaultProblem(kind: .address, title: "A setting is not valid", detail: "\(name) is not valid.",
-                                suggestion: "Correct it in Settings > Vaults and save.")
+                                suggestion: "Give the vault a valid value for it.")
         }
     }
 }
@@ -47,7 +47,7 @@ extension SessionError: VaultProblemConvertible {
 extension Keychain.Failure: VaultProblemConvertible {
     var vaultProblem: VaultProblem {
         VaultProblem(kind: .credential, title: "The keychain refused", detail: errorDescription ?? "The keychain call failed.",
-                     suggestion: "Allow Mac Authenticator to use the keychain item, or enter the credential again in Settings > Vaults.")
+                     suggestion: "Allow Mac Authenticator to use the keychain item, or store the credential again.")
     }
 }
 
@@ -103,7 +103,7 @@ final class VaultSession {
         guard !(error is CancellationError) else {
             return
         }
-        let problem = VaultProblem(error)
+        let problem = VaultProblem(error, method: configuration.authMethod)
         lastAttempt = Date()
         guard status != .failed(problem) else {
             return

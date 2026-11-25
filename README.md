@@ -124,11 +124,18 @@ name, issuer, store and parameters, and hold **Show in menu bar**, **Show Window
 - **-** asks before the selected account and its secret are deleted, and closes its window.
 
 **Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
-of each sign-in. **+** adds a vault and **-** removes the selected one. For the selected vault the
-page holds its settings and sign-in, with the sign-in state, **Sign In** and **Sign Out**, and
-**Save** and **Revert** at the bottom. Sign In and Sign Out work for every sign-in method; the
-methods other than OIDC also sign in when a code is needed, and an OIDC vault is signed in here,
-after each launch.
+of each vault's authentication. **+** adds a vault and **-** removes the selected one. For the selected vault the
+page holds its settings and authentication, with its state, a start button and a stop button,
+and **Save** and **Revert** at the bottom. The words follow the method:
+
+| Method | State | Start | Stop |
+|---|---|---|---|
+| Token | Token not checked, Checking the token..., Token accepted | **Check Token** | **Forget Token** |
+| Username and password, AppRole | Not logged in, Logging in..., Logged in | **Log In** | **Log Out** |
+| OIDC | Signed out, Signing in..., Signed in | **Sign In** | **Sign Out** |
+
+A token, password or AppRole vault also authenticates by itself when a code is needed; an OIDC
+vault is signed in with its button after each launch.
 
 ## Adding an account
 
@@ -182,7 +189,7 @@ until they have been listed.
 
 An account can take its codes from the TOTP secrets engine of a Vault server, which then holds
 the secret and the app never sees it. The app has any number of Vault profiles, each a
-connection to one server with its own sign-in, and any number of keys of each. A Vault account
+connection to one server with its own authentication, and any number of keys of each. A Vault account
 looks and works like any other: it has a window, can be shown beside the menu bar icon and can
 be copied; its code is fetched from Vault once for each period.
 
@@ -195,7 +202,7 @@ The Vaults tab of the Settings window asks for:
   address, and then the credential and the codes cross the network unencrypted;
 - the namespace, for Vault Enterprise;
 - the mount of the TOTP engine, `totp` by default;
-- the sign-in method and its mount, which is named after the method by default:
+- the authentication method and its mount, which is named after the method by default:
   - **Token**: the token is kept in the keychain;
   - **Username and password**: the user name is a setting and the password is kept in the
     keychain;
@@ -214,10 +221,10 @@ its attributes hold the settings and its data holds the credential, empty for OI
 accounts taken from Vault are in the app's user defaults, each with its profile and key.
 Removing a profile deletes its item and its accounts; the keys stay in Vault.
 
-Profiles are signed in independently, so accounts of several servers show codes at once.
+Profiles authenticate independently, so accounts of several servers show codes at once.
 
-With a token, password or AppRole the app signs in when a code is needed, and again when Vault
-refuses the token; a renewable token is renewed when half of its lease has passed. A code that
+With a token, password or AppRole the app authenticates when a code is needed, and again when
+Vault refuses the token; a renewable token is renewed when half of its lease has passed. A code that
 cannot be fetched is reported in the code window in place of the code.
 
 ### Adding accounts from a vault
@@ -248,9 +255,12 @@ A failure is said in words: what is wrong, what happened, and what to do about i
 - A Vault account whose vault has a problem shows a warning in the Accounts list and a Problem
   section in its details, and its code window says what is wrong in place of the code.
 - **Test Connection** on the vault's page checks the settings as typed, without saving them:
-  the address, whether the server answers and is unsealed, the sign-in, and the TOTP engine.
-  Each step shows passed, warning, failed or skipped, and the first failure says what to do. An
-  OIDC vault skips the sign-in and the engine, which need the sign-in window.
+  the address, whether the server answers and is unsealed, the authentication, and the TOTP
+  engine. The authentication step is named after what it does: **Token** checks that the token is
+  valid and says when it ends, **Login** logs in with a password or an AppRole and says that Vault
+  issued a token, and **Authentication** is not tested for an OIDC vault, which signs in
+  interactively, so the engine step is not tested either. Each step shows passed, warning, failed
+  or skipped, and the first failure says what to do.
 - When a vault that worked fails, a macOS notification names it; clicking it opens Settings on
   the vault. A vault that keeps failing notifies once, until it works again. The permission is
   asked when the first vault is saved, and the app bundle from `make` posts the notifications;
@@ -283,7 +293,7 @@ that need them, both to a user who adds accounts and shows codes.
 ### What the Vault administrator prepares
 
 - the TOTP engine, with the keys;
-- a policy for the user, role or token the app signs in with:
+- a policy for the user, role or token the app authenticates with:
 
   ```hcl
   path "totp/keys"   { capabilities = ["list"] }

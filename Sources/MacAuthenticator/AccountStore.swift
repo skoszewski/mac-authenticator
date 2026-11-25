@@ -376,7 +376,7 @@ final class AccountStore {
         guard let session = vault(for: vaultKey.profile) else {
             return VaultProblem(kind: .other, title: "The vault of this account was removed",
                                 detail: "The account takes its codes from a vault that is not set up any more.",
-                                suggestion: "Remove the account, or add the vault again in Settings > Vaults.")
+                                suggestion: "Remove the account, or set the vault up again.")
         }
         if case let .failed(problem) = session.status {
             return problem

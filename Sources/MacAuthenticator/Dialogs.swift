@@ -103,7 +103,7 @@ enum Dialogs {
     static func addFromVault(to store: AccountStore) async {
         let sessions = store.vaults
         guard !sessions.isEmpty else {
-            showError("No vault is set up", "Add a vault in Settings > Vaults first.")
+            showError("No vault is set up", "Accounts can be taken from a vault once one is set up.")
             return
         }
         var keys: [UUID: [String]] = [:]
@@ -207,7 +207,7 @@ enum Dialogs {
     /// The pop-up of the vaults to choose from, or nil, after telling so, when none is set up.
     private static func vaultPopUp(of store: AccountStore) -> NSPopUpButton? {
         guard !store.vaults.isEmpty else {
-            showError("No vault is set up", "Add a vault in Settings > Vaults first.")
+            showError("No vault is set up", "Accounts can be taken from a vault once one is set up.")
             return nil
         }
         let popUp = NSPopUpButton()

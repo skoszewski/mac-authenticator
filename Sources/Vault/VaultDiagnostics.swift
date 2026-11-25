@@ -24,7 +24,7 @@ public struct VaultCheck: Equatable, Sendable {
     }
 }
 
-/// Tests the connection to a Vault step by step: the address, the server, the sign-in and the
+/// Tests the connection to a Vault step by step: the address, the server, the authentication and the
 /// TOTP engine. It keeps no token and touches no session.
 public enum VaultDiagnostics {
     /// Runs the steps in order, stopping after a step that fails; the credential is the token,
@@ -43,7 +43,8 @@ public enum VaultDiagnostics {
                                          message: "The address uses plain HTTP; the credential and the codes cross the network unencrypted.",
                                          problem: nil))
             } else {
-                checks.append(VaultCheck(step: "Address", outcome: .passed, message: request.url?.absoluteString ?? "", problem: nil))
+                checks.append(VaultCheck(step: "Address", outcome: .passed,
+                                         message: configuration.address.trimmingCharacters(in: .whitespaces), problem: nil))
             }
         } catch {
             checks.append(VaultCheck(step: "Address", outcome: .failed, message: "The address cannot be used.",
@@ -76,23 +77,42 @@ public enum VaultDiagnostics {
             return checks
         }
 
-        // Sign-in
+        // Authentication: a token is checked, a password or an AppRole is logged in, OIDC is not tested.
+        let step: String
+        switch configuration.authMethod {
+        case .token:
+            step = "Token"
+        case .userpass, .approle:
+            step = "Login"
+        case .oidc:
+            step = "Authentication"
+        }
         let token: VaultToken?
         do {
             token = try await VaultClient.signIn(configuration: configuration, credential: credential)
-            checks.append(VaultCheck(step: "Sign-in", outcome: token == nil ? .skipped : .passed,
-                                     message: token == nil ? "OIDC signs in with Sign In on the vault's page."
-                                                           : "Signed in with the \(configuration.authMethod.rawValue) method.",
-                                     problem: nil))
+            switch (configuration.authMethod, token) {
+            case let (.token, token?):
+                let end = token.expires.map { "until \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "and has no end"
+                checks.append(VaultCheck(step: step, outcome: .passed, message: "The token is valid \(end).", problem: nil))
+            case (.userpass, _):
+                checks.append(VaultCheck(step: step, outcome: .passed,
+                                         message: "Vault issued a token to the user \(configuration.username ?? "").", problem: nil))
+            case (.approle, _):
+                checks.append(VaultCheck(step: step, outcome: .passed, message: "Vault issued a token to the AppRole.", problem: nil))
+            default:
+                checks.append(VaultCheck(step: step, outcome: .skipped,
+                                         message: "Not tested: an OIDC vault signs in interactively.", problem: nil))
+            }
         } catch {
-            checks.append(VaultCheck(step: "Sign-in", outcome: .failed, message: "The sign-in failed.",
-                                     problem: VaultProblem(error)))
+            let message = configuration.authMethod == .token ? "Vault did not accept the token." : "Vault refused the login."
+            checks.append(VaultCheck(step: step, outcome: .failed, message: message,
+                                     problem: VaultProblem(error, method: configuration.authMethod)))
             return checks
         }
 
         // TOTP engine
         guard let token else {
-            checks.append(VaultCheck(step: "TOTP engine", outcome: .skipped, message: "Needs a sign-in first.", problem: nil))
+            checks.append(VaultCheck(step: "TOTP engine", outcome: .skipped, message: "Not tested: there is no token.", problem: nil))
             return checks
         }
         do {
@@ -102,12 +122,13 @@ public enum VaultDiagnostics {
                                          message: "The engine lists no keys; the mount \(configuration.totpMount) may be wrong.",
                                          problem: nil))
             } else {
-                checks.append(VaultCheck(step: "TOTP engine", outcome: .passed, message: "\(keys.count) keys are listed.", problem: nil))
+                checks.append(VaultCheck(step: "TOTP engine", outcome: .passed,
+                                         message: keys.count == 1 ? "1 key is listed." : "\(keys.count) keys are listed.", problem: nil))
             }
         } catch let error as VaultError where error.isDenied {
             checks.append(VaultCheck(step: "TOTP engine", outcome: .warning,
-                                     message: "The policy does not allow listing the keys; their names can be typed.",
-                                     problem: VaultProblem(error)))
+                                     message: "The policy does not allow listing the keys.",
+                                     problem: VaultProblem(error, method: configuration.authMethod)))
         } catch {
             checks.append(VaultCheck(step: "TOTP engine", outcome: .failed, message: "The keys could not be listed.",
                                      problem: VaultProblem(error)))

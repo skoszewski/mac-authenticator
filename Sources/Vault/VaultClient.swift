@@ -384,13 +384,13 @@ public struct VaultClient: Sendable {
     }
 }
 
-/// A setting or credential the sign-in method needs and the form leaves empty.
+/// A setting or credential the authentication method needs and the form leaves empty.
 struct EmptyValue: Error, VaultProblemConvertible {
     let what: String
 
     var vaultProblem: VaultProblem {
-        VaultProblem(kind: .credential, title: "\(what) is empty", detail: "The sign-in needs \(what.lowercased()).",
-                     suggestion: "Enter it in the vault's settings.")
+        VaultProblem(kind: .credential, title: "\(what) is empty", detail: "The authentication needs \(what.lowercased()).",
+                     suggestion: "Provide it for the vault.")
     }
 }
 

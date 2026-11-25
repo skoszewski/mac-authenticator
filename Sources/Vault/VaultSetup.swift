@@ -64,7 +64,7 @@ public enum VaultSetup {
     public static func problem(of options: VaultSetupOptions) -> VaultProblem? {
         func invalid(_ detail: String) -> VaultProblem {
             VaultProblem(kind: .other, title: "A setup setting is not valid", detail: detail,
-                         suggestion: "Correct it in the setup dialog.")
+                         suggestion: "Correct it and run the setup again.")
         }
         func isName(_ value: String) -> Bool {
             !value.isEmpty && value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
@@ -130,7 +130,7 @@ public enum VaultSetup {
                 return VaultCheck(step: step, outcome: .failed, message: "A policy named \(name) exists already.",
                                   problem: VaultProblem(kind: .other, title: "The policy exists",
                                                         detail: "The vault holds a policy named \(name), and writing it would replace it.",
-                                                        suggestion: "Tick Replace policies that exist, or choose another name."))
+                                                        suggestion: "Allow the setup to replace existing policies, or choose another name."))
             } catch VaultError.http(let status, _) where status == 404 {
                 // The name is free.
             } catch {

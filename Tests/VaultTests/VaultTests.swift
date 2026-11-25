@@ -181,8 +181,44 @@ struct VaultAgainstDevServerTests {
     @Test func aConnectionTestPassesAgainstTheServer() async throws {
         let server = try server()
         let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: server.rootToken)
-        #expect(checks.map(\.step) == ["Address", "Server", "Sign-in", "TOTP engine"])
+        #expect(checks.map(\.step) == ["Address", "Server", "Token", "TOTP engine"])
         #expect(checks.map(\.outcome) == [.passed, .passed, .passed, .passed])
+        #expect(checks[0].message == server.address)
+        #expect(checks[2].message == "The token is valid and has no end.")
+    }
+
+    @Test func aConnectionTestSaysUntilWhenATokenEnds() async throws {
+        let server = try server()
+        let token = try await server.token(policy: "full")
+        let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: token)
+        #expect(checks[2].step == "Token")
+        #expect(checks[2].message.hasPrefix("The token is valid until "))
+    }
+
+    @Test func aConnectionTestLogsInWithAPassword() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .userpass),
+                                                credential: VaultDevServer.password)
+        #expect(checks.map(\.step) == ["Address", "Server", "Login", "TOTP engine"])
+        #expect(checks[2].outcome == .passed)
+        #expect(checks[2].message == "Vault issued a token to the user alice.")
+    }
+
+    @Test func aConnectionTestLogsInWithAnAppRole() async throws {
+        let server = try server()
+        var configuration = configuration(server, method: .approle)
+        configuration.roleID = server.roleID
+        let checks = await VaultDiagnostics.run(configuration: configuration, credential: server.secretID)
+        #expect(checks.map(\.step) == ["Address", "Server", "Login", "TOTP engine"])
+        #expect(checks[2].message == "Vault issued a token to the AppRole.")
+    }
+
+    @Test func aConnectionTestNamesARefusedLogin() async throws {
+        let server = try server()
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .userpass), credential: "wrong")
+        #expect(checks.last?.step == "Login")
+        #expect(checks.last?.outcome == .failed)
+        #expect(checks.last?.message == "Vault refused the login.")
     }
 
     @Test func aConnectionTestNamesTheStepOfAnUnreachableServer() async throws {
@@ -197,8 +233,9 @@ struct VaultAgainstDevServerTests {
     @Test func aConnectionTestNamesTheStepOfARefusedToken() async throws {
         let server = try server()
         let checks = await VaultDiagnostics.run(configuration: configuration(server), credential: "not-a-token")
-        #expect(checks.last?.step == "Sign-in")
+        #expect(checks.last?.step == "Token")
         #expect(checks.last?.outcome == .failed)
+        #expect(checks.last?.message == "Vault did not accept the token.")
         #expect(checks.last?.problem?.kind == .denied)
     }
 
@@ -218,10 +255,13 @@ struct VaultAgainstDevServerTests {
         #expect(checks.first?.problem?.kind == .address)
     }
 
-    @Test func aConnectionTestSkipsTheSignInOfOIDC() async throws {
+    @Test func aConnectionTestDoesNotTestOIDC() async throws {
         let server = try server()
         let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .oidc), credential: nil)
+        #expect(checks.map(\.step) == ["Address", "Server", "Authentication", "TOTP engine"])
         #expect(checks.map(\.outcome) == [.passed, .passed, .skipped, .skipped])
+        #expect(checks[2].message == "Not tested: an OIDC vault signs in interactively.")
+        #expect(checks[3].message == "Not tested: there is no token.")
     }
 
     @Test(arguments: ["localhost", "127.0.0.1", "127.1.2.3", "::1"])

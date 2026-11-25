@@ -37,12 +37,13 @@ public struct VaultProblem: Equatable, Sendable {
         "\(title)\n\(detail)\n\(suggestion)"
     }
 
-    public init(_ error: Error) {
+    /// The problem of an error; the method of the vault, when known, words what to do about a refused token.
+    public init(_ error: Error, method: AuthMethod? = nil) {
         switch error {
         case let error as VaultProblemConvertible:
             self = error.vaultProblem
         case let error as VaultError:
-            self = Self.problem(of: error)
+            self = Self.problem(of: error, method: method)
         case let error as URLError:
             self = Self.problem(of: error)
         default:
@@ -51,7 +52,7 @@ public struct VaultProblem: Equatable, Sendable {
         }
     }
 
-    private static func problem(of error: VaultError) -> VaultProblem {
+    private static func problem(of error: VaultError, method: AuthMethod?) -> VaultProblem {
         switch error {
         case let .badAddress(address):
             return VaultProblem(kind: .address, title: "The address is not usable",
@@ -59,14 +60,15 @@ public struct VaultProblem: Equatable, Sendable {
                                 suggestion: "Use the form https://vault.example.com:8200.")
         case let .http(status, messages):
             let said = messages.isEmpty ? "Vault gave no message." : messages.joined(separator: "; ")
-            return problem(status: status, said: said)
+            return problem(status: status, said: said, method: method)
         case let .badResponse(what):
             return VaultProblem(kind: .response, title: "The answer is not from a Vault",
                                 detail: "The answer could not be read as \(what).",
                                 suggestion: "Check that the address and the port are those of the Vault API, not of a web page or a proxy.")
         case .notSignedIn:
-            return VaultProblem(kind: .notSignedIn, title: "Not signed in", detail: "The vault has no sign-in.",
-                                suggestion: "Sign in from Settings > Vaults.")
+            return VaultProblem(kind: .notSignedIn, title: "Not signed in",
+                                detail: "No sign-in is active, and an OIDC vault signs in interactively after each launch and when its token ends.",
+                                suggestion: "Sign in to the vault.")
         case let .oidc(message):
             return VaultProblem(kind: .denied, title: "The OIDC sign-in failed", detail: message,
                                 suggestion: "Sign in again; check the OIDC role and its redirect URI.")
@@ -79,17 +81,28 @@ public struct VaultProblem: Equatable, Sendable {
         }
     }
 
-    private static func problem(status: Int, said: String) -> VaultProblem {
+    private static func problem(status: Int, said: String, method: AuthMethod?) -> VaultProblem {
+        let again: String
+        switch method {
+        case .token:
+            again = "Replace the token"
+        case .userpass, .approle:
+            again = "Log in again"
+        case .oidc:
+            again = "Sign in again"
+        case nil:
+            again = "Authenticate again"
+        }
         switch status {
         case 400:
             return VaultProblem(kind: .server, title: "Vault refused the request", detail: said,
-                                suggestion: "Check the key name and the vault's settings; Vault's message says what is wrong.")
+                                suggestion: "Check the key name and the vault's address, mounts and method; Vault's message says what is wrong.")
         case 403:
             return VaultProblem(kind: .denied, title: "Vault denied the access", detail: said,
-                                suggestion: "The token may have ended, or its policy lacks this access. Sign in again, or ask for the policy.")
+                                suggestion: "The token may have ended, or its policy lacks this access. \(again), or ask for the policy.")
         case 404:
             return VaultProblem(kind: .server, title: "Vault does not know the path", detail: said,
-                                suggestion: "Check the TOTP engine mount and the mount of the sign-in method in the vault's settings.")
+                                suggestion: "Check the mount of the TOTP engine and the mount of the authentication method.")
         case 429:
             return VaultProblem(kind: .server, title: "Vault is busy", detail: said,
                                 suggestion: "Wait and try again.")
@@ -99,7 +112,7 @@ public struct VaultProblem: Equatable, Sendable {
         default:
             return VaultProblem(kind: .server, title: "Vault answered \(status)", detail: said,
                                 suggestion: status >= 500 ? "The server has a problem; try again later, and look at its log."
-                                                          : "Check the vault's settings.")
+                                                          : "Check the vault's address, mounts and method.")
         }
     }
 
@@ -113,7 +126,7 @@ public struct VaultProblem: Equatable, Sendable {
         case .cannotConnectToHost:
             return VaultProblem(kind: .network, title: "Nothing answers at the vault's address",
                                 detail: "The connection to \(host) was refused or blocked.",
-                                suggestion: "Check the host and the port, that Vault runs, and any firewall or VPN. On a local network, allow Mac Authenticator in System Settings > Privacy & Security > Local Network.")
+                                suggestion: "Check the host and the port, that Vault runs, and any firewall or VPN. On a local network, macOS may also need to allow Mac Authenticator to reach the local network.")
         case .timedOut:
             return VaultProblem(kind: .network, title: "The vault did not answer in time",
                                 detail: "\(host) did not answer before the time ran out.",

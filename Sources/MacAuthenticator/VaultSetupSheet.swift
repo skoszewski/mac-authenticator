@@ -41,8 +41,8 @@ struct VaultSetupSheet: View {
                                                   options: options)
                 }
             } catch {
-                checks = [VaultCheck(step: "Sign-in", outcome: .failed, message: "The setup was not started.",
-                                     problem: VaultProblem(error))]
+                checks = [VaultCheck(step: "Authentication", outcome: .failed, message: "The setup was not started.",
+                                     problem: VaultProblem(error, method: draft.method))]
             }
             running = false
             finished = true

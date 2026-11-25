@@ -198,7 +198,7 @@ private enum VaultSelection: Hashable {
     case new
 }
 
-/// The Vault profiles, and the settings, sign-in and keys of the selected one.
+/// The Vault profiles, and the settings, authentication and keys of the selected one.
 struct VaultSettings: View {
     let store: AccountStore
     let windows: CodeWindows
@@ -288,17 +288,30 @@ extension VaultSession.Status {
         }
     }
 
-    /// The status as the text of the profile's page.
-    fileprivate var text: String {
-        switch self {
-        case .signedOut:
-            return "Signed out"
-        case .signingIn:
-            return "Signing in..."
-        case .signedIn:
-            return "Signed in"
-        case let .failed(problem):
+    /// The status in the words of the method: a token is checked, a password or an AppRole is logged
+    /// in, and only OIDC signs in.
+    fileprivate func text(for method: AuthMethod) -> String {
+        switch (self, method) {
+        case let (.failed(problem), _):
             return problem.title
+        case (.signedOut, .token):
+            return "Token not checked"
+        case (.signedOut, .userpass), (.signedOut, .approle):
+            return "Not logged in"
+        case (.signedOut, .oidc):
+            return "Signed out"
+        case (.signingIn, .token):
+            return "Checking the token..."
+        case (.signingIn, .userpass), (.signingIn, .approle):
+            return "Logging in..."
+        case (.signingIn, .oidc):
+            return "Signing in..."
+        case (.signedIn, .token):
+            return "Token accepted"
+        case (.signedIn, .userpass), (.signedIn, .approle):
+            return "Logged in"
+        case (.signedIn, .oidc):
+            return "Signed in"
         }
     }
 }
@@ -314,6 +327,31 @@ extension AuthMethod {
             return "AppRole"
         case .oidc:
             return "OIDC"
+        }
+    }
+
+    /// The name of the action that starts the method: a token is checked, a password or an AppRole is
+    /// logged in, and OIDC signs in.
+    fileprivate var startLabel: String {
+        switch self {
+        case .token:
+            return "Check Token"
+        case .userpass, .approle:
+            return "Log In"
+        case .oidc:
+            return "Sign In"
+        }
+    }
+
+    /// The name of the action that drops what the method obtained.
+    fileprivate var stopLabel: String {
+        switch self {
+        case .token:
+            return "Forget Token"
+        case .userpass, .approle:
+            return "Log Out"
+        case .oidc:
+            return "Sign Out"
         }
     }
 
@@ -384,7 +422,7 @@ struct VaultProfileDraft: Equatable {
     }
 }
 
-/// The page of a vault: its settings and sign-in, and for a saved one its accounts; the session is
+/// The page of a vault: its settings and authentication, and for a saved one its accounts; the session is
 /// nil for a vault not yet made.
 private struct VaultProfileEditor: View {
     let store: AccountStore
@@ -457,7 +495,7 @@ private struct VaultProfileEditor: View {
                 TextField("Namespace", text: $draft.namespace, prompt: Text("Optional, Vault Enterprise"))
                 TextField("TOTP engine mount", text: $draft.totpMount)
             }
-            Section("Sign-in") {
+            Section("Authentication") {
                 Picker("Method", selection: $draft.method) {
                     ForEach(AuthMethod.allCases, id: \.self) { method in
                         Text(method.title)
@@ -486,7 +524,7 @@ private struct VaultProfileEditor: View {
                 }
                 if let session {
                     LabeledContent("Status") {
-                        Text(session.status.text)
+                        Text(session.status.text(for: session.configuration.authMethod))
                             .foregroundStyle(session.status.color)
                     }
                     if case let .failed(problem) = session.status {
@@ -504,14 +542,14 @@ private struct VaultProfileEditor: View {
                         }
                     }
                     HStack {
-                        Button("Sign In") {
+                        Button(session.configuration.authMethod.startLabel) {
                             Task {
                                 // The vault's status shows the outcome.
                                 try? await store.signInToVault(session)
                             }
                         }
                         .disabled(session.status == .signingIn)
-                        Button("Sign Out") {
+                        Button(session.configuration.authMethod.stopLabel) {
                             store.signOutOfVault(session)
                         }
                         .disabled(session.status == .signedOut)
