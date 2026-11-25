@@ -145,13 +145,13 @@ public struct VaultClient: Sendable {
         self.session = session
     }
 
-    private static func trimmed(_ path: String) -> String {
+    static func trimmed(_ path: String) -> String {
         path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     /// The request for `path` below `/v1/`, with the token and namespace headers.
     func makeRequest(_ method: String, _ path: String, query: [URLQueryItem] = [],
-                     body: [String: String]? = nil) throws -> URLRequest {
+                     body: [String: any Sendable]? = nil) throws -> URLRequest {
         guard var components = URLComponents(string: configuration.address.trimmingCharacters(in: .whitespaces)),
               let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
               components.host?.isEmpty == false else {
@@ -179,8 +179,8 @@ public struct VaultClient: Sendable {
 
     /// Sends the request and returns the body of a successful answer; other answers are errors
     /// carrying Vault's messages.
-    private func send(_ method: String, _ path: String, query: [URLQueryItem] = [],
-                      body: [String: String]? = nil) async throws -> Data {
+    func send(_ method: String, _ path: String, query: [URLQueryItem] = [],
+              body: [String: any Sendable]? = nil) async throws -> Data {
         let (data, response) = try await session.data(for: makeRequest(method, path, query: query, body: body))
         guard let http = response as? HTTPURLResponse else {
             throw VaultError.badResponse("not an HTTP answer")
@@ -381,5 +381,42 @@ public struct VaultClient: Sendable {
 
     private static func escaped(_ name: String) -> String {
         name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+    }
+}
+
+/// A setting or credential the sign-in method needs and the form leaves empty.
+struct EmptyValue: Error, VaultProblemConvertible {
+    let what: String
+
+    var vaultProblem: VaultProblem {
+        VaultProblem(kind: .credential, title: "\(what) is empty", detail: "The sign-in needs \(what.lowercased()).",
+                     suggestion: "Enter it in the vault's settings.")
+    }
+}
+
+extension VaultClient {
+    /// The token of a sign-in with the configured method and credential; nil for OIDC, which needs
+    /// the browser.
+    public static func signIn(configuration: VaultConfiguration, credential: String?) async throws -> VaultToken? {
+        func required(_ value: String?, _ what: String) throws -> String {
+            guard let value, !value.isEmpty else {
+                throw EmptyValue(what: what)
+            }
+            return value
+        }
+        let client = VaultClient(configuration: configuration)
+        switch configuration.authMethod {
+        case .token:
+            return try await VaultClient(configuration: configuration, token: try required(credential, "The token"))
+                .lookupSelf()
+        case .userpass:
+            return try await client.loginUserpass(username: try required(configuration.username, "The user name"),
+                                                  password: try required(credential, "The password"))
+        case .approle:
+            return try await client.loginAppRole(roleID: try required(configuration.roleID, "The RoleID"),
+                                                 secretID: try required(credential, "The SecretID"))
+        case .oidc:
+            return nil
+        }
     }
 }

@@ -242,6 +242,78 @@ struct VaultAgainstDevServerTests {
         #expect(checks.first?.outcome == .warning)
     }
 
+    private func isDenied(_ error: Error) -> Bool {
+        (error as? VaultError)?.isDenied == true
+    }
+
+    @Test func theSetupEnablesTheEngineAndWritesThePolicies() async throws {
+        let server = try server()
+        let options = VaultSetupOptions(mount: "setup-a/totp", creatorPolicy: "setup_a_creator", userPolicy: "setup_a_user")
+        let checks = await VaultSetup.run(client: client(server, token: server.rootToken), options: options)
+        #expect(checks.map(\.outcome) == [.passed, .passed, .passed])
+
+        let creator = client(server, token: try await server.token(policy: "setup_a_creator"), mount: "setup-a/totp")
+        try await creator.importKey("shared", input: VaultDevServer.secret)
+        #expect(try await creator.readKey("shared").algorithm == "SHA1")
+        await #expect { try await creator.code(key: "shared") } throws: { isDenied($0) }
+
+        let user = client(server, token: try await server.token(policy: "setup_a_user"), mount: "setup-a/totp")
+        #expect(try await user.code(key: "shared").count == 6)
+        #expect(try await user.listKeys() == ["shared"])
+        #expect(try await user.readKey("shared").issuer == "")
+        await #expect { try await user.importKey("other", input: VaultDevServer.secret) } throws: { isDenied($0) }
+    }
+
+    @Test func aSecondSetupStopsAtTheEngineAndWritesNothing() async throws {
+        let server = try server()
+        let root = client(server, token: server.rootToken)
+        let first = VaultSetupOptions(mount: "setup-b/totp", creatorPolicy: "setup_b_creator", userPolicy: "setup_b_user")
+        #expect(await VaultSetup.run(client: root, options: first).map(\.outcome) == [.passed, .passed, .passed])
+
+        let second = VaultSetupOptions(mount: "setup-b/totp", creatorPolicy: "setup_b2_creator", userPolicy: "setup_b2_user")
+        let checks = await VaultSetup.run(client: root, options: second)
+        #expect(checks.map(\.step) == ["Engine"])
+        #expect(checks.map(\.outcome) == [.failed])
+        await #expect(throws: DevServerError.self) {
+            try await server.admin("GET", "sys/policies/acl/setup_b2_creator")
+        }
+
+        var policiesOnly = second
+        policiesOnly.engineExists = true
+        #expect(await VaultSetup.run(client: root, options: policiesOnly).map(\.outcome) == [.skipped, .passed, .passed])
+    }
+
+    @Test func anExistingPolicyStopsTheSetupUnlessItIsReplaced() async throws {
+        let server = try server()
+        let root = client(server, token: server.rootToken)
+        var options = VaultSetupOptions(mount: "setup-c/totp", creatorPolicy: "setup_c_creator", userPolicy: "setup_c_user")
+        #expect(await VaultSetup.run(client: root, options: options).map(\.outcome) == [.passed, .passed, .passed])
+
+        options.engineExists = true
+        let stopped = await VaultSetup.run(client: root, options: options)
+        #expect(stopped.map(\.outcome) == [.skipped, .failed])
+        #expect(stopped.last?.problem?.title == "The policy exists")
+
+        options.overwritePolicies = true
+        #expect(await VaultSetup.run(client: root, options: options).map(\.outcome) == [.skipped, .passed, .passed])
+    }
+
+    @Test func theSetupStopsAtTheFirstCallThatIsDenied() async throws {
+        let server = try server()
+        let denied = client(server, token: try await server.token(policy: "nolist"))
+        let checks = await VaultSetup.run(client: denied, options: VaultSetupOptions(mount: "setup-d/totp"))
+        #expect(checks.map(\.outcome) == [.failed])
+        #expect(checks.first?.problem?.kind == .denied)
+    }
+
+    @Test func theSetupOfBadOptionsMakesNoCall() async throws {
+        let server = try server()
+        let checks = await VaultSetup.run(client: client(server, token: server.rootToken),
+                                          options: VaultSetupOptions(mount: "has space/totp"))
+        #expect(checks.map(\.step) == ["Settings"])
+        #expect(checks.map(\.outcome) == [.failed])
+    }
+
     @Test func aRevokedTokenIsDenied() async throws {
         let server = try server()
         let token = try await server.token(policy: "full")
@@ -374,5 +446,43 @@ struct VaultAgainstDevServerTests {
         let found = VaultProblem(Odd())
         #expect(found.kind == .other)
         #expect(found.detail == "odd failure")
+    }
+}
+
+@Suite struct VaultSetupPolicyTests {
+    @Test func theCreatorPolicyListsCreatesAndReadsKeys() {
+        let policy = VaultSetup.creatorPolicy(mount: "totp")
+        #expect(policy.contains("path \"totp/keys\" {\n  capabilities = [\"list\"]"))
+        #expect(policy.contains("path \"totp/keys/*\" {\n  capabilities = [\"create\", \"update\", \"read\"]"))
+        #expect(!policy.contains("code"))
+        #expect(!policy.contains("delete"))
+    }
+
+    @Test func theUserPolicyReadsKeysAndCodes() {
+        let policy = VaultSetup.userPolicy(mount: "totp")
+        #expect(policy.contains("path \"totp/keys/*\" {\n  capabilities = [\"read\"]"))
+        #expect(policy.contains("path \"totp/code/*\" {\n  capabilities = [\"read\"]"))
+        #expect(!policy.contains("create"))
+    }
+
+    @Test func aMountIsTrimmedAndMayBeNested() {
+        let policy = VaultSetup.userPolicy(mount: "/team/totp/")
+        #expect(policy.contains("path \"team/totp/keys\""))
+        #expect(policy.contains("path \"team/totp/code/*\""))
+    }
+
+    @Test(arguments: [
+        VaultSetupOptions(mount: ""),
+        VaultSetupOptions(mount: "a b"),
+        VaultSetupOptions(creatorPolicy: ""),
+        VaultSetupOptions(userPolicy: "has space"),
+        VaultSetupOptions(creatorPolicy: "same", userPolicy: "same"),
+    ])
+    func optionsThatCannotBeUsedAreRefused(options: VaultSetupOptions) {
+        #expect(VaultSetup.problem(of: options) != nil)
+    }
+
+    @Test func theDefaultsAreUsable() {
+        #expect(VaultSetup.problem(of: VaultSetupOptions()) == nil)
     }
 }

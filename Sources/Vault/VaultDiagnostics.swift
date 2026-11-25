@@ -79,7 +79,7 @@ public enum VaultDiagnostics {
         // Sign-in
         let token: VaultToken?
         do {
-            token = try await signIn(configuration, credential)
+            token = try await VaultClient.signIn(configuration: configuration, credential: credential)
             checks.append(VaultCheck(step: "Sign-in", outcome: token == nil ? .skipped : .passed,
                                      message: token == nil ? "OIDC signs in in the browser, from the vault's page."
                                                            : "Signed in with the \(configuration.authMethod.rawValue) method.",
@@ -151,39 +151,5 @@ public enum VaultDiagnostics {
             }
             return found
         }.value
-    }
-
-    /// A setting or credential the method needs and the form leaves empty.
-    private struct Empty: Error, VaultProblemConvertible {
-        let what: String
-
-        var vaultProblem: VaultProblem {
-            VaultProblem(kind: .credential, title: "\(what) is empty", detail: "The sign-in needs \(what.lowercased()).",
-                         suggestion: "Enter it in the vault's settings.")
-        }
-    }
-
-    /// The token of a sign-in with the configured method; nil for OIDC, which needs the browser.
-    private static func signIn(_ configuration: VaultConfiguration, _ credential: String?) async throws -> VaultToken? {
-        func required(_ value: String?, _ what: String) throws -> String {
-            guard let value, !value.isEmpty else {
-                throw Empty(what: what)
-            }
-            return value
-        }
-        let client = VaultClient(configuration: configuration)
-        switch configuration.authMethod {
-        case .token:
-            return try await VaultClient(configuration: configuration, token: try required(credential, "The token"))
-                .lookupSelf()
-        case .userpass:
-            return try await client.loginUserpass(username: try required(configuration.username, "The user name"),
-                                                  password: try required(credential, "The password"))
-        case .approle:
-            return try await client.loginAppRole(roleID: try required(configuration.roleID, "The RoleID"),
-                                                 secretID: try required(credential, "The SecretID"))
-        case .oidc:
-            return nil
-        }
     }
 }

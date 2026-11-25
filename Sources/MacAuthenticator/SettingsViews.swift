@@ -394,6 +394,7 @@ private struct VaultProfileEditor: View {
     @State private var message: String?
     @State private var checks: [VaultCheck] = []
     @State private var testing = false
+    @State private var showSetup = false
 
     init(store: AccountStore, session: VaultSession?, saved: @escaping (UUID) -> Void) {
         self.store = store
@@ -521,6 +522,10 @@ private struct VaultProfileEditor: View {
                         test()
                     }
                     .disabled(testing)
+                    Button("Vault Setup...") {
+                        showSetup = true
+                    }
+                    .disabled(draft.address.trimmingCharacters(in: .whitespaces).isEmpty)
                     if testing {
                         ProgressView()
                             .controlSize(.small)
@@ -549,12 +554,15 @@ private struct VaultProfileEditor: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showSetup) {
+            VaultSetupSheet(draft: draft, session: session)
+        }
     }
 }
 
 
-/// One step of a connection test: its outcome, its message, and what to do when it is not passed.
-private struct CheckRow: View {
+/// One step of a connection test or a setup: its outcome, its message, and what to do when it is not passed.
+struct CheckRow: View {
     let check: VaultCheck
 
     private var symbol: (name: String, color: Color) {
