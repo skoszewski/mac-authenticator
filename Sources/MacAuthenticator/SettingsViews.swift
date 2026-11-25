@@ -478,7 +478,12 @@ private struct VaultProfileEditor: View {
                 let configuration = try draft.configuration()
                 let credential = draft.credential.isEmpty
                     ? try session.flatMap { try Keychain.vaultCredential(of: $0.profile.id) } : draft.credential
-                checks = await VaultDiagnostics.run(configuration: configuration, credential: credential)
+                // The token of the vault's sign-in goes to the address of the vault alone.
+                let sameServer = session.map {
+                    $0.configuration.address == configuration.address && $0.configuration.namespace == configuration.namespace
+                } ?? false
+                checks = await VaultDiagnostics.run(configuration: configuration, credential: credential,
+                                                    signedInToken: sameServer ? session?.token : nil)
             } catch {
                 checks = [VaultCheck(step: "Settings", outcome: .failed, message: "The settings cannot be tested.",
                                      problem: VaultProblem(error))]

@@ -5,7 +5,9 @@
 The menu is `MenuBarExtra` in the `.menu` style, the way the menu of serve-markdown is built,
 and `LSUIElement` keeps the app out of the Dock. The app also sets the accessory activation
 policy at launch, since a run from Xcode has no bundle and so no `Info.plist`; without the
-policy the dialogs do not take the keyboard. The state is `AccountStore`, an `@Observable`
+policy the dialogs do not take the keyboard. An accessory app is absent from Cmd-Tab, so the
+Settings window makes the app regular while it is open and returns it to accessory when it
+closes. The state is `AccountStore`, an `@Observable`
 class owned by the `App` as `@State` and passed to the menu, the menu bar label and the code
 windows, which redraw when the properties they read change.
 
@@ -35,7 +37,7 @@ account of a vault stay alerts, opened from the window; the vault form, which wa
 large for an alert, is a SwiftUI form with Save and Revert.
 
 A vault is signed in and out from the window, since the menu has no sign-in item; an OIDC vault
-needs it after each launch.
+needs it when it has no token or its token has ended.
 
 ## The codes are shown in floating panels and beside the menu bar icon
 
@@ -78,7 +80,7 @@ The TOTP code, the base32 decoding and the otpauth URI reading are the library `
 imports CryptoKit and Foundation alone, so its tests run without the app. `TOTPTests` uses
 Swift Testing with parameterised tests: the RFC 6238 Appendix B vectors, codes printed by
 `otp.py` of linux-cloud-router for one secret, as a second implementation to agree with, and
-the secret and URI cases. `make` runs them before the bundle is assembled.
+the secret and URI cases. `make tests` runs them; `make` does not.
 
 ## The bundle is assembled by make and signed ad hoc
 
@@ -190,13 +192,19 @@ Each profile has a session of its own, so accounts of several servers show codes
 profile's removal removes its accounts, whose keys stay in Vault, since they cannot show a code
 without it.
 
-## The OIDC token is kept in memory and the sign-in is explicit
+## The OIDC token is kept in the keychain and the sign-in is explicit
 
-The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
-the resulting Vault token in memory alone: a sign-in is repeated after each launch and when the
-token ends. The sign-in window is opened from Sign In only, never because a code was needed,
-so a window opening in the background cannot start a login nobody expects. The other methods
-sign in by themselves, since they need no user.
+The identity provider signs the user in, so the app stores no credential for OIDC. It keeps the
+resulting Vault token in the keychain, in an item of its own per profile, in a service apart from
+the profiles: a profile's credential item is a token, a password or a SecretID by the method, and
+a token of a sign-in must never be taken for one when the method is changed. The session takes the
+kept token up when it is made, unless it has ended, so a sign-in is repeated only when the token
+ends or Vault refuses it, not after each launch. Sign Out, a change of the profile, a token
+that ended or was refused, and the profile's removal delete the item. A keychain that refuses to
+keep the token is logged, and the token works in memory. The tokens of the other methods are
+not kept, since those methods log in again by themselves. The sign-in window is opened from Sign
+In only, never because a code was needed, so a window opening in the background cannot start a
+login nobody expects.
 
 The redirect URI is `http://localhost:<port>/oidc/callback`, 8250 by default, which the role's
 `allowed_redirect_uris` must hold, as for `vault login -method=oidc`. The state of the

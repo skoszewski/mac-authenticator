@@ -67,7 +67,7 @@ public struct VaultProblem: Equatable, Sendable {
                                 suggestion: "Check that the address and the port are those of the Vault API, not of a web page or a proxy.")
         case .notSignedIn:
             return VaultProblem(kind: .notSignedIn, title: "Not signed in",
-                                detail: "No sign-in is active, and an OIDC vault signs in interactively after each launch and when its token ends.",
+                                detail: "No sign-in is active, and an OIDC vault signs in interactively when it has no token, or when its token ends.",
                                 suggestion: "Sign in to the vault.")
         case let .oidc(message):
             return VaultProblem(kind: .denied, title: "The OIDC sign-in failed", detail: message,

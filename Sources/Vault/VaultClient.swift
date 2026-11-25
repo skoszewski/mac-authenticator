@@ -81,7 +81,7 @@ public enum VaultError: LocalizedError, Equatable {
 }
 
 /// A Vault token and when it ends; a token without an end has no expiry.
-public struct VaultToken: Sendable, Equatable {
+public struct VaultToken: Sendable, Equatable, Codable {
     public var token: String
     public var expires: Date?
     public var renewable: Bool

@@ -52,7 +52,7 @@ extension Keychain.Failure: VaultProblemConvertible {
 }
 
 /// A Vault connection: a named profile, kept in the keychain with its credential, and the token of
-/// the current sign-in, kept in memory alone.
+/// the current token, which for OIDC is also kept in the keychain.
 @MainActor
 @Observable
 final class VaultSession {
@@ -72,12 +72,22 @@ final class VaultSession {
     /// Called once when a vault that worked fails, until it works again.
     @ObservationIgnored var onProblem: ((VaultSession, VaultProblem) -> Void)?
     @ObservationIgnored private var worked = false
-    @ObservationIgnored private var token: VaultToken?
+    @ObservationIgnored private(set) var token: VaultToken?
     @ObservationIgnored private var signInTask: Task<Void, Error>?
     @ObservationIgnored private var signInWindow: OIDCSignInWindow?
 
+    /// An OIDC profile takes up the token kept in the keychain, unless it has ended.
     init(profile: VaultProfile) {
         self.profile = profile
+        guard profile.configuration.authMethod == .oidc, let kept = try? Keychain.vaultToken(of: profile.id) else {
+            return
+        }
+        if let expires = kept.expires, expires.timeIntervalSinceNow <= 5 {
+            keep(nil)
+        } else {
+            token = kept
+            status = .signedIn(until: kept.expires)
+        }
     }
 
     var configuration: VaultConfiguration {
@@ -90,12 +100,30 @@ final class VaultSession {
         signOut()
     }
 
-    /// Drops the token and closes a sign-in window that is open.
+    /// Drops the token, and the one kept in the keychain, and closes a sign-in window that is open.
     func signOut() {
         signInWindow?.cancel()
-        token = nil
+        keep(nil)
         worked = false
         status = .signedOut
+    }
+
+    /// Makes the token the current one, or none; an OIDC token is kept in the keychain, and a
+    /// token dropped is forgotten there. A keychain that refuses is logged, and the token still works.
+    private func keep(_ token: VaultToken?) {
+        self.token = token
+        guard token == nil || configuration.authMethod == .oidc else {
+            return
+        }
+        do {
+            if let token {
+                try Keychain.saveVaultToken(token, of: profile.id)
+            } else {
+                try Keychain.deleteVaultToken(of: profile.id)
+            }
+        } catch {
+            Self.log.error("\(self.profile.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Records a failed call: the status shows its problem, and a vault that worked is reported once.
@@ -142,7 +170,7 @@ final class VaultSession {
         status = .signingIn
         do {
             let token = try await login(configuration)
-            self.token = token
+            keep(token)
             status = .signedIn(until: token.expires)
             succeeded()
         } catch is CancellationError {
@@ -215,10 +243,10 @@ final class VaultSession {
         if let current = token, let expires = current.expires {
             let left = expires.timeIntervalSinceNow
             if left <= 5 {
-                token = nil
+                keep(nil)
             } else if current.renewable, let lease = current.lease, left < lease / 2,
                       let renewed = try? await VaultClient(configuration: configuration, token: current.token).renewSelf() {
-                token = renewed
+                keep(renewed)
                 status = .signedIn(until: renewed.expires)
             }
         }
@@ -255,7 +283,7 @@ final class VaultSession {
         do {
             return try await call(VaultClient(configuration: configuration, token: first.token))
         } catch let error as VaultError where error.isDenied {
-            token = nil
+            keep(nil)
             switch configuration.authMethod {
             case .userpass, .approle:
                 try await signIn()

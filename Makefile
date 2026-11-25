@@ -1,8 +1,8 @@
 # Builds, checks and assembles the Mac Authenticator menu bar app.
 #
-#   make            check the TOTP code and write dist/Mac Authenticator.app (target app)
+#   make            build the app and write dist/Mac Authenticator.app (target app)
 #   make build      build the app's executable
-#   make test       run the tests of the TOTP and Vault libraries
+#   make tests      run the tests of the TOTP and Vault libraries
 #   make clean      remove the build products and dist/
 #
 # The Vault tests start an in-memory "vault server -dev"; the vault binary must be on PATH, or
@@ -24,9 +24,9 @@ SIGN_IDENTITY ?= -
 APP = dist/Mac Authenticator.app
 STAGE = .build/stage/Mac Authenticator.app
 
-.PHONY: app build test clean
+.PHONY: app build tests clean
 
-app: test build
+app: build
 	rm -rf "$(STAGE)"
 	mkdir -p "$(STAGE)/Contents/MacOS" "$(STAGE)/Contents/Resources"
 	cp "$$(swift build -c release --show-bin-path)/MacAuthenticator" "$(STAGE)/Contents/MacOS/MacAuthenticator"
@@ -48,7 +48,7 @@ app: test build
 build:
 	swift build -c release --product MacAuthenticator
 
-test:
+tests:
 	swift test
 
 clean:

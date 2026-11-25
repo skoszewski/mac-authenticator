@@ -188,11 +188,64 @@ enum Keychain {
         }
     }
 
-    /// Deletes the profile's item; one already gone is no failure.
+    /// Deletes the profile's item and its token item; ones already gone are no failure.
     static func deleteVaultProfile(_ id: UUID) throws {
         let status = SecItemDelete(vaultQuery(account: id.uuidString) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw Failure(operation: "remove the Vault profile", status: status)
+        }
+        try deleteVaultToken(of: id)
+    }
+
+    /// The tokens of OIDC sign-ins are the items of a service of their own, one per profile, so a
+    /// profile's credential is never taken for a token.
+    private static let vaultTokenService = service + ".vault.token"
+    static let vaultTokenItemDescription = "Mac Authenticator Vault token"
+
+    private static func vaultTokenQuery(_ id: UUID) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: vaultTokenService,
+            kSecAttrAccount as String: id.uuidString,
+        ]
+    }
+
+    /// The token kept for the profile; nil when none is kept.
+    static func vaultToken(of id: UUID) throws -> VaultToken? {
+        var query = vaultTokenQuery(id)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess, let data = result as? Data, let token = try? JSONDecoder().decode(VaultToken.self, from: data) else {
+            throw Failure(operation: "read the Vault token", status: status)
+        }
+        return token
+    }
+
+    /// Keeps the token as the profile's token item, replacing the one kept.
+    static func saveVaultToken(_ token: VaultToken, of id: UUID) throws {
+        let data = try JSONEncoder().encode(token)
+        var attributes = vaultTokenQuery(id)
+        attributes[kSecAttrDescription as String] = vaultTokenItemDescription
+        attributes[kSecValueData as String] = data
+        var status = SecItemAdd(attributes as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            status = SecItemUpdate(vaultTokenQuery(id) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        guard status == errSecSuccess else {
+            throw Failure(operation: "keep the Vault token", status: status)
+        }
+    }
+
+    /// Deletes the profile's token item; one already gone is no failure.
+    static func deleteVaultToken(of id: UUID) throws {
+        let status = SecItemDelete(vaultTokenQuery(id) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(operation: "forget the Vault token", status: status)
         }
     }
 

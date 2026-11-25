@@ -28,8 +28,10 @@ public struct VaultCheck: Equatable, Sendable {
 /// TOTP engine. It keeps no token and touches no session.
 public enum VaultDiagnostics {
     /// Runs the steps in order, stopping after a step that fails; the credential is the token,
-    /// the password or the SecretID of the configured method.
-    public static func run(configuration: VaultConfiguration, credential: String?) async -> [VaultCheck] {
+    /// the password or the SecretID of the configured method. The token of an OIDC vault's
+    /// current sign-in is checked and used for the engine step; without one an OIDC vault is not tested.
+    public static func run(configuration: VaultConfiguration, credential: String?,
+                           signedInToken: VaultToken? = nil) async -> [VaultCheck] {
         var checks: [VaultCheck] = []
         let client = VaultClient(configuration: configuration)
 
@@ -77,7 +79,9 @@ public enum VaultDiagnostics {
             return checks
         }
 
-        // Authentication: a token is checked, a password or an AppRole is logged in, OIDC is not tested.
+        // Authentication: a token is checked, a password or an AppRole is logged in, OIDC is checked
+        // when it has a token and is not tested otherwise.
+        let checksToken = configuration.authMethod == .token || (configuration.authMethod == .oidc && signedInToken != nil)
         let step: String
         switch configuration.authMethod {
         case .token:
@@ -85,13 +89,17 @@ public enum VaultDiagnostics {
         case .userpass, .approle:
             step = "Login"
         case .oidc:
-            step = "Authentication"
+            step = signedInToken == nil ? "Authentication" : "Token"
         }
         let token: VaultToken?
         do {
-            token = try await VaultClient.signIn(configuration: configuration, credential: credential)
+            if let signedInToken, configuration.authMethod == .oidc {
+                token = try await VaultClient(configuration: configuration, token: signedInToken.token).lookupSelf()
+            } else {
+                token = try await VaultClient.signIn(configuration: configuration, credential: credential)
+            }
             switch (configuration.authMethod, token) {
-            case let (.token, token?):
+            case let (.token, token?), let (.oidc, token?):
                 let end = token.expires.map { "until \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "and has no end"
                 checks.append(VaultCheck(step: step, outcome: .passed, message: "The token is valid \(end).", problem: nil))
             case (.userpass, _):
@@ -104,7 +112,7 @@ public enum VaultDiagnostics {
                                          message: "Not tested: an OIDC vault signs in interactively.", problem: nil))
             }
         } catch {
-            let message = configuration.authMethod == .token ? "Vault did not accept the token." : "Vault refused the login."
+            let message = checksToken ? "Vault did not accept the token." : "Vault refused the login."
             checks.append(VaultCheck(step: step, outcome: .failed, message: message,
                                      problem: VaultProblem(error, method: configuration.authMethod)))
             return checks

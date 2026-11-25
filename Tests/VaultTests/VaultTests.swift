@@ -264,6 +264,27 @@ struct VaultAgainstDevServerTests {
         #expect(checks[3].message == "Not tested: there is no token.")
     }
 
+    @Test func aConnectionTestChecksTheTokenOfAnOIDCSignIn() async throws {
+        let server = try server()
+        let token = VaultToken(token: server.rootToken, expires: nil, renewable: false)
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .oidc), credential: nil,
+                                                signedInToken: token)
+        #expect(checks.map(\.step) == ["Address", "Server", "Token", "TOTP engine"])
+        #expect(checks[2].outcome == .passed)
+        #expect(checks[3].outcome != .skipped)
+    }
+
+    @Test func aConnectionTestNamesTheStepOfARefusedOIDCToken() async throws {
+        let server = try server()
+        let token = VaultToken(token: "not-a-token", expires: nil, renewable: false)
+        let checks = await VaultDiagnostics.run(configuration: configuration(server, method: .oidc), credential: nil,
+                                                signedInToken: token)
+        #expect(checks.last?.step == "Token")
+        #expect(checks.last?.outcome == .failed)
+        #expect(checks.last?.message == "Vault did not accept the token.")
+        #expect(checks.last?.problem?.kind == .denied)
+    }
+
     @Test(arguments: ["localhost", "127.0.0.1", "127.1.2.3", "::1"])
     func aHostOfThisMacResolvesToLoopback(host: String) async {
         #expect(await VaultDiagnostics.resolvesToLoopback(host))

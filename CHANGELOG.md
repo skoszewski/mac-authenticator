@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.2 - 2026-11-25 18:29:28 +0100
+
+feat: the token of an OIDC sign-in is kept in the keychain, the Settings window can be reached with
+Cmd-Tab, and a code window does not flash while a Vault code is fetched.
+
+- The code window of a Vault account keeps its layout when a period ends: the code is empty and a
+  small dot in the bottom right corner shows that the code is being fetched, instead of the window
+  switching to a message and back.
+- The Vault token of an OIDC sign-in is kept in the keychain, so an OIDC vault is signed in after a
+  launch until its token ends; Sign Out, a change of the vault, a token that ended or was refused,
+  and the removal of the vault delete it.
+- Test Connection of a signed in OIDC vault checks the token of the sign-in and lists the keys of
+  the TOTP engine with it; the token goes to the vault's own address alone.
+- `make` builds the app without running the tests; `make tests` runs them.
+- While the Settings window is open the app is a regular app, with a Dock icon and a place in
+  Cmd-Tab; closing the window returns it to the menu bar alone.
+
 ## 0.6.1 - 2026-11-25 13:18:59 +0100
 
 fix: the authentication of a vault and its messages are named after what happens, and no message

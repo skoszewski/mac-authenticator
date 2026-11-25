@@ -58,7 +58,8 @@ final class CodeWindows {
 }
 
 /// The content of a code window: the code, the time left of it, and a Copy button; or why the
-/// secret could not be read.
+/// secret could not be read. A Vault code that is not fetched yet is empty, with a dot in the
+/// corner.
 struct CodeView: View {
     let store: AccountStore
     let accountID: UUID
@@ -66,9 +67,14 @@ struct CodeView: View {
     var body: some View {
         let now = store.now
         if let account = store.accounts.first(where: { $0.id == accountID }) {
+            let code = store.code(of: account)
+            let problem = store.problem(of: account)
+            // A Vault code not yet fetched keeps the layout of a shown code, with an empty code.
+            let waiting = code == nil && store.vaultKeys[accountID] != nil && problem == nil
+                && store.secretErrors[accountID] == nil
             VStack(spacing: 8) {
-                if let code = store.code(of: account) {
-                    Text(code.groupedCode)
+                if code != nil || waiting {
+                    Text(code?.groupedCode ?? " ")
                         .font(.system(size: 28, weight: .medium, design: .monospaced))
                         .textSelection(.enabled)
                     HStack {
@@ -86,7 +92,7 @@ struct CodeView: View {
                             }
                         }
                     }
-                } else if let problem = store.problem(of: account) {
+                } else if let problem {
                     Text(problem.title)
                         .bold()
                         .foregroundStyle(.red)
@@ -97,14 +103,22 @@ struct CodeView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text(store.secretErrors[accountID]
-                         ?? (store.vaultKeys[accountID] == nil ? "The secret is not read." : "The code is fetched from Vault."))
+                    Text(store.secretErrors[accountID] ?? "The secret is not read.")
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(12)
             .frame(width: 240)
+            .overlay(alignment: .bottomTrailing) {
+                // The dot shows that the code is being fetched from Vault.
+                if waiting {
+                    Circle()
+                        .fill(.secondary)
+                        .frame(width: 6, height: 6)
+                        .padding(4)
+                }
+            }
         }
     }
 }

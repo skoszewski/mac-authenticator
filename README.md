@@ -2,7 +2,8 @@
 
 A macOS menu bar app holding TOTP accounts and showing their current codes, in a small window
 floating over the others or beside the menu bar icon. The codes follow RFC 6238 and refresh as
-their period passes. The app shows an icon in the menu bar, and no Dock icon.
+their period passes. The app shows an icon in the menu bar, and no Dock icon, except while the Settings window is
+open: then the app has a Dock icon and a place in Cmd-Tab.
 
 ## Requirements
 
@@ -14,15 +15,15 @@ their period passes. The app shows an icon in the menu bar, and no Dock icon.
   sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
   ```
 
-- The `vault` binary on `PATH`, or named by `VAULT_BINARY`, for `make test`: the Vault tests
+- The `vault` binary on `PATH`, or named by `VAULT_BINARY`, for `make tests`: the Vault tests
   start an in-memory `vault server -dev` on 127.0.0.1, port 18200 or `VAULT_TEST_PORT`, and stop
   it afterwards.
 
 ## Building
 
 ```sh
-make            # run the checks and write "dist/Mac Authenticator.app"
-make test       # run the checks alone
+make            # write "dist/Mac Authenticator.app"
+make tests      # run the tests
 make build      # build the executable alone
 make clean      # remove the build products and dist/
 ```
@@ -62,7 +63,7 @@ whose path it is given:
 swift tools/make-windows-icon.swift <windows-authenticator>/src/WindowsAuthenticator/Resources/AppIcon.ico
 ```
 
-`make test` runs `swift test`: the tests in `Tests/TOTPTests` compare the codes with the test
+`make tests` runs `swift test`: the tests in `Tests/TOTPTests` compare the codes with the test
 vectors of RFC 6238 Appendix B for SHA-1, SHA-256 and SHA-512 and with codes printed by
 `otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs. The tests in
 `Tests/VaultTests` run the Vault client against a dev server they start: the sign-in with a
@@ -135,7 +136,7 @@ and **Save** and **Revert** at the bottom. The words follow the method:
 | OIDC | Signed out, Signing in..., Signed in | **Sign In** | **Sign Out** |
 
 A token, password or AppRole vault also authenticates by itself when a code is needed; an OIDC
-vault is signed in with its button after each launch.
+vault is signed in with its button when it has no token, or its token has ended.
 
 ## Adding an account
 
@@ -191,7 +192,8 @@ An account can take its codes from the TOTP secrets engine of a Vault server, wh
 the secret and the app never sees it. The app has any number of Vault profiles, each a
 connection to one server with its own authentication, and any number of keys of each. A Vault account
 looks and works like any other: it has a window, can be shown beside the menu bar icon and can
-be copied; its code is fetched from Vault once for each period.
+be copied; its code is fetched from Vault once for each period. While the code of a period is
+being fetched, the code window shows an empty code and a small dot in its bottom right corner.
 
 ### The profiles
 
@@ -207,13 +209,14 @@ The Vaults tab of the Settings window asks for:
   - **Username and password**: the user name is a setting and the password is kept in the
     keychain;
   - **AppRole**: the RoleID is a setting and the SecretID is kept in the keychain;
-  - **OIDC**: the role, and the port of the redirect URI, 8250 by default. Nothing is kept in
-    the keychain: Sign In opens a window of the app with the identity provider's pages, and the
-    provider signs the user in there. The window shows the host of the page, loads pages over
-    HTTPS alone, and ends the sign-in itself when the provider redirects to the redirect URI, so
-    nothing listens on the port and no page is loaded from it. The provider's cookies are kept in
-    the app's own store, apart from Safari's, so a later sign-in is often one click. The token
-    lives in memory, so the sign-in is repeated after each launch and when the token ends.
+  - **OIDC**: the role, and the port of the redirect URI, 8250 by default. No credential is
+    kept: Sign In opens a window of the app with the identity provider's pages, and the provider
+    signs the user in there. The window shows the host of the page, loads pages over HTTPS alone,
+    and ends the sign-in itself when the provider redirects to the redirect URI, so nothing
+    listens on the port and no page is loaded from it. The provider's cookies are kept in the
+    app's own store, apart from Safari's, so a later sign-in is often one click. The Vault token
+    is kept in the keychain, in an item of its own, so the sign-in is repeated only when the token
+    ends or is refused. Sign Out deletes the token item.
 
 An empty credential field keeps the credential stored before. A profile is one generic password
 item of the service `pl.waw.koszewscy.MacAuthenticator.vault`, labelled with the profile name:
@@ -258,8 +261,9 @@ A failure is said in words: what is wrong, what happened, and what to do about i
   the address, whether the server answers and is unsealed, the authentication, and the TOTP
   engine. The authentication step is named after what it does: **Token** checks that the token is
   valid and says when it ends, **Login** logs in with a password or an AppRole and says that Vault
-  issued a token, and **Authentication** is not tested for an OIDC vault, which signs in
-  interactively, so the engine step is not tested either. Each step shows passed, warning, failed
+  issued a token. An OIDC vault that is signed in, at the address of the page, has its token
+  checked as **Token** and used for the engine step; a signed out one has **Authentication**
+  skipped, since it signs in interactively, and so the engine step is skipped too. Each step shows passed, warning, failed
   or skipped, and the first failure says what to do.
 - When a vault that worked fails, a macOS notification names it; clicking it opens Settings on
   the vault. A vault that keeps failing notifies once, until it works again. The permission is

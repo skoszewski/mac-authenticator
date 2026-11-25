@@ -15,9 +15,10 @@ final class SettingsRouter {
     var vault: UUID?
 }
 
-/// The Settings window, made on the first call and kept: an AppKit window hosting SwiftUI.
+/// The Settings window, made on the first call and kept: an AppKit window hosting SwiftUI. The app
+/// is a regular app, with a Dock icon and a place in Cmd-Tab, while the window is open.
 @MainActor
-final class SettingsWindow {
+final class SettingsWindow: NSObject, NSWindowDelegate {
     private let store: AccountStore
     private let windows: CodeWindows
     private let router = SettingsRouter()
@@ -41,10 +42,17 @@ final class SettingsWindow {
             window.title = "Mac Authenticator Settings"
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: SettingsView(store: store, windows: windows, router: router))
+            window.delegate = self
             window.center()
             self.window = window
         }
+        NSApp.setActivationPolicy(.regular)
         Dialogs.activate()
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Returns the app to the menu bar alone.
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 }
