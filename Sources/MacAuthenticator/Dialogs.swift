@@ -321,6 +321,105 @@ enum Dialogs {
         }
     }
 
+    /// Asks for a name and a secret until a secret account is added or Cancel is chosen.
+    static func addSecret(to store: AccountStore) {
+        let nameField = NSTextField()
+        nameField.placeholderString = "Name of the account"
+        let secretField = NSSecureTextField()
+        secretField.placeholderString = "The password or key to keep"
+        let stack = fieldStack([("Name", nameField), ("Secret", secretField)])
+
+        var information = "The secret is kept in your login keychain."
+        while true {
+            let alert = NSAlert()
+            alert.messageText = "Add Secret"
+            alert.informativeText = information
+            alert.accessoryView = stack
+            alert.addButton(withTitle: "Add")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = nameField.stringValue.isEmpty ? nameField : secretField
+            activate()
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                return
+            }
+            do {
+                try store.addSecret(name: nameField.stringValue, value: secretField.stringValue)
+                return
+            } catch {
+                information = error.localizedDescription
+            }
+        }
+    }
+
+    /// Asks for the vault, the KV version, the mount, the secret and the field until a secret account
+    /// reading that field is added or Cancel is chosen. When writing, it also asks for the value, which
+    /// is set in the field first; the vault's other fields of the secret are kept.
+    static func addVaultSecret(to store: AccountStore, writing: Bool) async {
+        guard !store.vaults.isEmpty else {
+            showError("No vault is set up", "Accounts can be taken from a vault once one is set up.")
+            return
+        }
+        let picker = VaultSecretPicker(sessions: store.vaults)
+        let valueField = NSSecureTextField()
+        valueField.placeholderString = "The password or key to keep"
+        let nameField = NSTextField()
+        nameField.placeholderString = "Empty to use the secret name and the field"
+        var rows: [(String, NSView)] = [
+            ("Vault", picker.vaultPopUp), ("KV version", picker.versionPopUp), ("Mount", picker.mountField),
+            ("Secret name", picker.nameBox), ("Field", picker.fieldField),
+        ]
+        if writing {
+            rows.append(("Secret value", valueField))
+        }
+        rows.append(("Account name", nameField))
+        let stack = fieldStack(rows)
+
+        var information = writing
+            ? "The field is set in the vault's secret, which is created when it does not exist; its other fields are kept."
+            : "Pick a secret of the mount, or type its name, and name the field to read."
+        while true {
+            let alert = NSAlert()
+            alert.messageText = writing ? "Add Secret in Vault" : "Add Secret from Vault"
+            alert.informativeText = information
+            alert.accessoryView = stack
+            alert.addButton(withTitle: "Add")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = picker.mountField
+            activate()
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                return
+            }
+            let session = picker.session
+            let reference: SecretReference
+            do {
+                reference = try picker.reference.validated()
+                if writing {
+                    let value = valueField.stringValue
+                    guard !value.isEmpty else {
+                        throw StoreError.emptySecret
+                    }
+                    try await session.authorized { try await $0.writeSecret(reference, value: value) }
+                } else {
+                    _ = try await session.authorized { try await $0.readSecret(reference) }
+                }
+            } catch {
+                information = VaultProblem(error).report
+                continue
+            }
+
+            // A failure to add the account is reported, and the secret is not written again.
+            let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            do {
+                try store.addVaultSecret(name: typed.isEmpty ? "\(reference.name): \(reference.field)" : typed,
+                                         reference: reference, profile: session.profile.id)
+            } catch {
+                showError(writing ? "The secret was written in the vault but the account was not added"
+                                  : "The account was not added", error.localizedDescription)
+            }
+            return
+        }
+    }
+
     /// Asks before deleting the vault, its credential and its accounts.
     static func removeVaultProfile(_ session: VaultSession, from store: AccountStore) {
         let count = store.accounts(of: session.profile.id).count
@@ -346,9 +445,16 @@ enum Dialogs {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Remove \(account.name)?"
-        alert.informativeText = store.vaultKeys[account.id] == nil
-            ? "Its secret is deleted from the keychain; the account can only be added again with the secret."
-            : "The account is removed from this app; its key stays in the vault."
+        switch (store.vaultProfile(of: account) != nil, account.kind) {
+        case (true, .otp):
+            alert.informativeText = "The account is removed from this app; its key stays in the vault."
+        case (true, .secret):
+            alert.informativeText = "The account is removed from this app; its secret stays in the vault."
+        case (false, .otp):
+            alert.informativeText = "Its secret is deleted from the keychain; the account can only be added again with the secret."
+        case (false, .secret):
+            alert.informativeText = "Its secret is deleted from the keychain and cannot be recovered from this app."
+        }
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         activate()
@@ -386,5 +492,70 @@ private final class VaultKeyPicker: NSObject {
         keyBox.removeAllItems()
         keyBox.stringValue = ""
         keyBox.addItems(withObjectValues: keys[sessions[max(vaultPopUp.indexOfSelectedItem, 0)].profile.id] ?? [])
+    }
+}
+
+/// The fields of the Add Secret in Vault and Add Secret from Vault alerts: the vault, the KV version,
+/// the mount, and the secret and field to name. The secret names of the mount are listed when the
+/// vault, the version or the mount changes, and offered; any name can be typed.
+@MainActor
+private final class VaultSecretPicker: NSObject, NSTextFieldDelegate {
+    let vaultPopUp = NSPopUpButton()
+    let versionPopUp = NSPopUpButton()
+    let mountField = NSTextField(string: "secret")
+    let nameBox = NSComboBox()
+    let fieldField = NSTextField(string: "password")
+    private let sessions: [VaultSession]
+    private var listing: Task<Void, Never>?
+
+    init(sessions: [VaultSession]) {
+        self.sessions = sessions
+        super.init()
+        vaultPopUp.addItems(withTitles: sessions.map(\.profile.name))
+        versionPopUp.addItems(withTitles: ["KV v2", "KV v1"])
+        for popUp in [vaultPopUp, versionPopUp] {
+            popUp.target = self
+            popUp.action = #selector(changed)
+        }
+        mountField.delegate = self
+        mountField.placeholderString = "The mount of the KV engine"
+        fieldField.placeholderString = "For example password"
+        nameBox.placeholderString = "Name of the secret"
+        changed()
+    }
+
+    var session: VaultSession {
+        sessions[max(vaultPopUp.indexOfSelectedItem, 0)]
+    }
+
+    var version: KVVersion {
+        versionPopUp.indexOfSelectedItem == 1 ? .v1 : .v2
+    }
+
+    var reference: SecretReference {
+        SecretReference(version: version, mount: mountField.stringValue, name: nameBox.stringValue, field: fieldField.stringValue)
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        changed()
+    }
+
+    /// Lists the secrets of the mount again; the list of a vault, version or mount that was left is dropped.
+    @objc private func changed() {
+        listing?.cancel()
+        let session = session
+        let version = version
+        let mount = mountField.stringValue
+        nameBox.removeAllItems()
+        guard !mount.trimmingCharacters(in: CharacterSet(charactersIn: " /")).isEmpty else {
+            return
+        }
+        listing = Task {
+            guard let names = try? await session.authorized({ try await $0.listSecrets(mount: mount, version: version) }),
+                  !Task.isCancelled else {
+                return
+            }
+            nameBox.addItems(withObjectValues: names)
+        }
     }
 }

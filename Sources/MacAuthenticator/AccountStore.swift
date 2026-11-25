@@ -11,9 +11,15 @@ enum StoreError: LocalizedError {
     case missingProfileName
     case profileRemoved
     case notLoaded
+    case missingName
+    case emptySecret
 
     var errorDescription: String? {
         switch self {
+        case .missingName:
+            return "Give the account a name."
+        case .emptySecret:
+            return "The secret is empty."
         case let .duplicateName(name):
             return "An account named \(name) exists already."
         case let .duplicateProfileName(name):
@@ -34,14 +40,24 @@ struct VaultKey: Equatable {
     var key: String
 }
 
-/// An account whose codes Vault makes: the account's parameters, its profile and the name of its key.
+/// The profile and the reference of the KV secret field a secret account is read from.
+struct VaultSecret: Equatable {
+    var profile: UUID
+    var reference: SecretReference
+}
+
+/// An account kept in Vault: for an OTP account the parameters, the profile and the name of the
+/// key Vault makes its codes from; for a secret account the profile and the reference, with the
+/// parameters and the key empty. Records written before secret accounts have neither kind nor reference.
 private struct VaultRecord: Codable {
     var id: UUID
+    var kind: Account.Kind?
     var profile: UUID
     var name: String
     var issuer: String?
     var parameters: String
     var key: String
+    var reference: SecretReference?
     var added: Date
 }
 
@@ -72,6 +88,8 @@ final class AccountStore {
     private(set) var vaults: [VaultSession] = []
     /// The Vault key and profile of each account whose codes Vault makes.
     private(set) var vaultKeys: [UUID: VaultKey] = [:]
+    /// The Vault profile and KV field of each secret account kept in Vault.
+    private(set) var vaultSecrets: [UUID: VaultSecret] = [:]
     private var vaultCodes: [UUID: VaultCode] = [:]
     @ObservationIgnored private var vaultRecords: [VaultRecord] = UserDefaults.standard.data(forKey: "vaultProfileAccounts")
         .flatMap { try? JSONDecoder().decode([VaultRecord].self, from: $0) } ?? []
@@ -137,11 +155,17 @@ final class AccountStore {
             }
             let order = UserDefaults.standard.stringArray(forKey: "accountOrder") ?? []
             let vaultListed = vaultRecords.compactMap { record in
-                (try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters))
-                    .map { Keychain.Listed(account: $0, created: record.added) }
+                let account = record.kind == .secret
+                    ? Account(secretID: record.id, name: record.name)
+                    : try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters)
+                return account.map { Keychain.Listed(account: $0, created: record.added) }
             }
-            vaultKeys = Dictionary(uniqueKeysWithValues: vaultRecords.map { ($0.id, VaultKey(profile: $0.profile, key: $0.key)) })
-            let listed = try Keychain.accounts() + vaultListed
+            let otpRecords = vaultRecords.filter { $0.kind != .secret }
+            vaultKeys = Dictionary(uniqueKeysWithValues: otpRecords.map { ($0.id, VaultKey(profile: $0.profile, key: $0.key)) })
+            vaultSecrets = Dictionary(uniqueKeysWithValues: vaultRecords.compactMap { record in
+                record.reference.map { (record.id, VaultSecret(profile: record.profile, reference: $0)) }
+            })
+            let listed = try Keychain.accounts() + Keychain.secretAccounts() + vaultListed
             accounts = listed.sorted { first, second in
                 let firstIndex = order.firstIndex(of: first.account.id.uuidString) ?? Int.max
                 let secondIndex = order.firstIndex(of: second.account.id.uuidString) ?? Int.max
@@ -168,10 +192,43 @@ final class AccountStore {
     /// for it.
     func addVaultAccount(_ account: Account, key: String, profile: UUID) throws {
         try checkCanAdd(named: account.name)
-        vaultRecords.append(VaultRecord(id: account.id, profile: profile, name: account.name, issuer: account.issuer,
-                                        parameters: account.parameters, key: key, added: Date()))
+        vaultRecords.append(VaultRecord(id: account.id, kind: nil, profile: profile, name: account.name, issuer: account.issuer,
+                                        parameters: account.parameters, key: key, reference: nil, added: Date()))
         saveVaultRecords()
         vaultKeys[account.id] = VaultKey(profile: profile, key: key)
+        accounts.append(account)
+        saveOrder()
+    }
+
+    /// Adds a secret account whose secret is kept in the keychain.
+    func addSecret(name: String, value: String) throws {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else {
+            throw StoreError.missingName
+        }
+        guard !value.isEmpty else {
+            throw StoreError.emptySecret
+        }
+        try checkCanAdd(named: name)
+        let account = Account(secretID: UUID(), name: name)
+        try Keychain.addSecret(id: account.id, name: name, value: value)
+        accounts.append(account)
+        saveOrder()
+    }
+
+    /// Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret
+    /// is kept for it.
+    func addVaultSecret(name: String, reference: SecretReference, profile: UUID) throws {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else {
+            throw StoreError.missingName
+        }
+        try checkCanAdd(named: name)
+        let account = Account(secretID: UUID(), name: name)
+        vaultRecords.append(VaultRecord(id: account.id, kind: .secret, profile: profile, name: name, issuer: nil,
+                                        parameters: "", key: "", reference: reference, added: Date()))
+        saveVaultRecords()
+        vaultSecrets[account.id] = VaultSecret(profile: profile, reference: reference)
         accounts.append(account)
         saveOrder()
     }
@@ -220,9 +277,14 @@ final class AccountStore {
         reload()
     }
 
-    /// The accounts whose codes the Vault profile makes.
+    /// The accounts kept in the Vault profile: those whose codes it makes and those whose secret it holds.
     func accounts(of profile: UUID) -> [Account] {
-        accounts.filter { vaultKeys[$0.id]?.profile == profile }
+        accounts.filter { vaultProfile(of: $0) == profile }
+    }
+
+    /// The Vault profile an account is kept in; nil for a keychain account.
+    func vaultProfile(of account: Account) -> UUID? {
+        vaultKeys[account.id]?.profile ?? vaultSecrets[account.id]?.profile
     }
 
     /// Deletes the profile's keychain item and its accounts; their keys stay in Vault.
@@ -258,13 +320,16 @@ final class AccountStore {
         guard loadError == nil else {
             throw StoreError.notLoaded
         }
-        if vaultKeys[account.id] == nil {
-            try Keychain.delete(account.id)
-        } else {
+        if vaultProfile(of: account) != nil {
             vaultRecords.removeAll { $0.id == account.id }
             saveVaultRecords()
             vaultKeys[account.id] = nil
+            vaultSecrets[account.id] = nil
             vaultCodes[account.id] = nil
+        } else if account.kind == .secret {
+            try Keychain.deleteSecret(account.id)
+        } else {
+            try Keychain.delete(account.id)
         }
         accounts.removeAll { $0.id == account.id }
         saveOrder()
@@ -277,7 +342,7 @@ final class AccountStore {
 
     /// Shows the account's code beside the menu bar icon, or stops showing it.
     func setShownInMenuBar(_ account: Account, _ shown: Bool) {
-        if shown {
+        if shown, account.kind == .otp {
             menuBarAccountID = account.id
         } else if menuBarAccountID == account.id {
             menuBarAccountID = nil
@@ -305,6 +370,40 @@ final class AccountStore {
 
     private func counter(of account: Account, at date: Date) -> Int {
         Int(date.timeIntervalSince1970) / account.period
+    }
+
+    /// The text of a secret account: read from its keychain item, or from its field in Vault.
+    private func secretValue(of account: Account) async throws -> String {
+        guard let vaultSecret = vaultSecrets[account.id] else {
+            return try Keychain.secretValue(of: account.id)
+        }
+        guard let session = vault(for: vaultSecret.profile) else {
+            throw StoreError.profileRemoved
+        }
+        let reference = vaultSecret.reference
+        return try await session.authorized { try await $0.readSecret(reference) }
+    }
+
+    /// The text of a secret account, for the user to look at; nothing is kept of it.
+    func revealSecret(of account: Account) async throws -> String {
+        try await secretValue(of: account)
+    }
+
+    /// Puts the text of a secret account in the clipboard, marked concealed, and empties the
+    /// clipboard after 30 seconds if it still holds that copy.
+    func copySecret(of account: Account) async throws {
+        let value = try await secretValue(of: account)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        let copy = pasteboard.changeCount
+        Task {
+            try? await Task.sleep(for: .seconds(30))
+            if pasteboard.changeCount == copy {
+                pasteboard.clearContents()
+            }
+        }
     }
 
     /// Puts the account's current code in the clipboard: a code computed from the secret, which
@@ -370,10 +469,10 @@ final class AccountStore {
 
     /// Why a Vault account has no code: its vault failed, or is gone.
     func problem(of account: Account) -> VaultProblem? {
-        guard let vaultKey = vaultKeys[account.id] else {
+        guard let profile = vaultProfile(of: account) else {
             return nil
         }
-        guard let session = vault(for: vaultKey.profile) else {
+        guard let session = vault(for: profile) else {
             return VaultProblem(kind: .other, title: "The vault of this account was removed",
                                 detail: "The account takes its codes from a vault that is not set up any more.",
                                 suggestion: "Remove the account, or set the vault up again.")
@@ -439,7 +538,7 @@ final class AccountStore {
 
     /// The registered accounts whose codes are shown: in an open window or beside the menu bar icon.
     private var shownIDs: Set<UUID> {
-        openWindowIDs.union(menuBarAccountID.map { [$0] } ?? []).intersection(accounts.map(\.id))
+        openWindowIDs.union(menuBarAccountID.map { [$0] } ?? []).intersection(accounts.filter { $0.kind == .otp }.map(\.id))
     }
 
     private func saveVaultRecords() {

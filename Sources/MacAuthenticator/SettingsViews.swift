@@ -33,12 +33,12 @@ struct AccountsSettings: View {
         store.accounts.first { $0.id == selection }
     }
 
-    /// The store of an account's secret: the keychain, or the vault that makes its codes.
+    /// The store of an account's secret: the keychain, or the vault that makes its codes or holds its secret.
     private func source(of account: Account) -> String {
-        guard let vaultKey = store.vaultKeys[account.id] else {
+        guard let profile = store.vaultProfile(of: account) else {
             return "Keychain"
         }
-        return "Vault: \(store.vault(for: vaultKey.profile)?.profile.name ?? "removed")"
+        return "Vault: \(store.vault(for: profile)?.profile.name ?? "removed")"
     }
 
     var body: some View {
@@ -55,7 +55,8 @@ struct AccountsSettings: View {
                 List(store.accounts, selection: $selection) { account in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(account.name)
+                            Label(account.name, systemImage: account.kind == .secret ? "key.fill" : "clock")
+                                .labelStyle(.titleAndIcon)
                             Text(source(of: account))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -92,6 +93,22 @@ struct AccountsSettings: View {
                         Button("Import to Vault...") {
                             Task {
                                 await Dialogs.importAccount(to: store)
+                            }
+                        }
+                        .disabled(store.vaults.isEmpty)
+                        Divider()
+                        Button("Secret...") {
+                            Dialogs.addSecret(to: store)
+                        }
+                        Button("Secret from Vault...") {
+                            Task {
+                                await Dialogs.addVaultSecret(to: store, writing: false)
+                            }
+                        }
+                        .disabled(store.vaults.isEmpty)
+                        Button("Secret in Vault...") {
+                            Task {
+                                await Dialogs.addVaultSecret(to: store, writing: true)
                             }
                         }
                         .disabled(store.vaults.isEmpty)
@@ -134,6 +151,7 @@ private struct AccountDetails: View {
     let router: SettingsRouter
     let account: Account
     let source: String
+    @State private var revealed: String?
 
     var body: some View {
         Form {
@@ -144,7 +162,7 @@ private struct AccountDetails: View {
                     Text(problem.detail)
                     Text(problem.suggestion)
                         .foregroundStyle(.secondary)
-                    if let profile = store.vaultKeys[account.id]?.profile, store.vault(for: profile) != nil {
+                    if let profile = store.vaultProfile(of: account), store.vault(for: profile) != nil {
                         Button("Show Vault") {
                             router.vault = profile
                             router.tab = .vaults
@@ -161,27 +179,67 @@ private struct AccountDetails: View {
                 if let key = store.vaultKeys[account.id]?.key {
                     LabeledContent("Vault key", value: key)
                 }
+                if let reference = store.vaultSecrets[account.id]?.reference {
+                    LabeledContent("KV version", value: "v\(reference.version.rawValue)")
+                    LabeledContent("Mount", value: reference.mount)
+                    LabeledContent("Secret name", value: reference.name)
+                    LabeledContent("Field", value: reference.field)
+                }
             }
-            Section("Code") {
-                LabeledContent("Algorithm", value: account.algorithm.rawValue)
-                LabeledContent("Digits", value: String(account.digits))
-                LabeledContent("Period", value: "\(account.period) s")
-            }
-            Section {
-                Toggle("Show in menu bar", isOn: Binding(
-                    get: { store.menuBarAccountID == account.id },
-                    set: { store.setShownInMenuBar(account, $0) }
-                ))
-                HStack {
-                    Button("Show Window") {
-                        windows.show(account)
+            if account.kind == .secret {
+                Section("Secret") {
+                    if let revealed {
+                        Text(revealed)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
                     }
-                    Button("Copy Code") {
-                        Task {
-                            do {
-                                try await store.copyCode(of: account)
-                            } catch {
-                                Dialogs.showProblem("The code was not copied", error)
+                    HStack {
+                        Button(revealed == nil ? "Reveal" : "Hide") {
+                            guard revealed == nil else {
+                                revealed = nil
+                                return
+                            }
+                            Task {
+                                do {
+                                    revealed = try await store.revealSecret(of: account)
+                                } catch {
+                                    Dialogs.showProblem("The secret was not read", error)
+                                }
+                            }
+                        }
+                        Button("Copy Secret") {
+                            Task {
+                                do {
+                                    try await store.copySecret(of: account)
+                                } catch {
+                                    Dialogs.showProblem("The secret was not copied", error)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Section("Code") {
+                    LabeledContent("Algorithm", value: account.algorithm.rawValue)
+                    LabeledContent("Digits", value: String(account.digits))
+                    LabeledContent("Period", value: "\(account.period) s")
+                }
+                Section {
+                    Toggle("Show in menu bar", isOn: Binding(
+                        get: { store.menuBarAccountID == account.id },
+                        set: { store.setShownInMenuBar(account, $0) }
+                    ))
+                    HStack {
+                        Button("Show Window") {
+                            windows.show(account)
+                        }
+                        Button("Copy Code") {
+                            Task {
+                                do {
+                                    try await store.copyCode(of: account)
+                                } catch {
+                                    Dialogs.showProblem("The code was not copied", error)
+                                }
                             }
                         }
                     }

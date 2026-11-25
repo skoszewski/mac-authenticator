@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 - 2026-11-25 20:49:03 +0100
+
+feat: secret accounts, plain strings kept in the keychain or in a field of a Vault KV secret, next
+to the TOTP accounts, and KV v2 and v1 engines in Vault Setup.
+
+- **Secret...** in the **+** menu of the Accounts tab adds a secret account whose secret is kept in
+  the login keychain, in an item of its own service.
+- **Secret from Vault...** adds a secret account that reads one field of a secret of a KV v1 or v2
+  engine, named by the KV version, the mount, the secret and the field; **Secret in Vault...** also
+  sets the field, creating the secret when it does not exist and keeping its other fields.
+- A secret account has **Copy Secret** in the menu and in Settings, and **Reveal** and **Hide** in
+  Settings. A copied secret is marked concealed and cleared from the clipboard after 30 seconds.
+  A secret account has no window and is not shown beside the menu bar icon.
+- Vault Setup can also enable a KV v2 engine and write the policies `kv_creator`, which lists,
+  creates, updates, patches and reads secrets, and `kv_user`, which lists and reads them, and a KV
+  v1 engine with `kv1_creator` and `kv1_user`; the TOTP, KV v2 and KV v1 parts are each switched
+  on or off.
+
 ## 0.6.4 - 2026-11-25 18:34:40 +0100
 
 fix: the build number the About panel shows is the id of the commit the app was built from.

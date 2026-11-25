@@ -101,6 +101,79 @@ enum Keychain {
         }
     }
 
+    /// The secret accounts are the items of a service of their own, so a build that knows only OTP
+    /// accounts does not read a secret as a TOTP secret.
+    private static let secretService = service + ".secret"
+    static let secretItemDescription = "Mac Authenticator secret"
+
+    private static func secretQuery(_ id: UUID) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: secretService,
+            kSecAttrAccount as String: id.uuidString,
+        ]
+    }
+
+    /// The secret accounts of all items, read from their attributes alone; an item whose
+    /// attributes cannot be read is left out.
+    static func secretAccounts() throws -> [Listed] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: secretService,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+            throw Failure(operation: "list the secrets", status: status)
+        }
+        return items.compactMap { item in
+            guard let id = (item[kSecAttrAccount as String] as? String).flatMap(UUID.init(uuidString:)),
+                  let name = item[kSecAttrLabel as String] as? String else {
+                return nil
+            }
+            return Listed(account: Account(secretID: id, name: name),
+                          created: item[kSecAttrCreationDate as String] as? Date ?? .distantPast)
+        }
+    }
+
+    /// The text of the secret account's item.
+    static func secretValue(of id: UUID) throws -> String {
+        var query = secretQuery(id)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+            throw Failure(operation: "read the secret", status: status)
+        }
+        return value
+    }
+
+    /// Adds the secret account's item.
+    static func addSecret(id: UUID, name: String, value: String) throws {
+        var attributes = secretQuery(id)
+        attributes[kSecAttrLabel as String] = name
+        attributes[kSecAttrDescription as String] = secretItemDescription
+        attributes[kSecValueData as String] = Data(value.utf8)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw Failure(operation: "add the secret", status: status)
+        }
+    }
+
+    /// Deletes the secret account's item; one already gone is no failure.
+    static func deleteSecret(_ id: UUID) throws {
+        let status = SecItemDelete(secretQuery(id) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(operation: "remove the secret", status: status)
+        }
+    }
+
     /// The Vault profiles are the items of a service of their own.
     private static let vaultService = service + ".vault"
     static let vaultItemDescription = "Mac Authenticator Vault profile"

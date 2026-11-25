@@ -8,11 +8,19 @@ public enum Algorithm: String, CaseIterable, Sendable {
     case sha512 = "SHA512"
 }
 
-/// A registered account: its name and the RFC 6238 parameters of its codes, without its secret.
+/// A registered account: its name and, for an OTP account, the RFC 6238 parameters of its codes,
+/// without its secret. A secret account holds a plain string and has no codes; its algorithm,
+/// digits and period are the defaults, which nothing reads.
 public struct Account: Identifiable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        case otp
+        case secret
+    }
+
     public static let digitsRange = 6...10
 
     public var id: UUID
+    public var kind = Kind.otp
     public var name: String
     public var issuer: String?
     public var algorithm: Algorithm
@@ -33,6 +41,17 @@ public struct Account: Identifiable, Equatable, Sendable {
         self.algorithm = algorithm
         self.digits = digits
         self.period = period
+    }
+
+    /// A secret account.
+    public init(secretID id: UUID = UUID(), name: String) {
+        self.id = id
+        self.kind = .secret
+        self.name = name
+        self.issuer = nil
+        self.algorithm = .sha1
+        self.digits = 6
+        self.period = 30
     }
 
     /// An account whose algorithm, digits and period are given as the text values of an otpauth

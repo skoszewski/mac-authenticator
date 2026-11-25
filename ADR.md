@@ -149,9 +149,10 @@ attempt, the account in the list and in its window, and the notification. Test C
 the steps of a connection one by one on the settings as typed, without a session or a saved
 setting, so a vault can be checked before it is saved and the failing step is named.
 
-## Vault Setup writes two policies, replaces nothing unasked, and assigns nothing
+## Vault Setup writes policies for each engine, replaces nothing unasked, and assigns nothing
 
-Setup enables the TOTP engine and writes `totp_creator` and `totp_user` with the identity the
+Setup enables the TOTP engine and writes `totp_creator` and `totp_user`, and, when asked, enables
+a KV v2 engine and writes `kv_creator` and `kv_user`, with the identity the
 vault's page describes, and stops at the first call that fails: Vault's own answer, such as a
 path already in use or a refused write, says what is wrong, and a half-done setup that went on
 would hide it. The identity is the page as typed, like Test Connection, so an administrator's
@@ -166,6 +167,18 @@ and period but never the secret, and adding an account from a vault needs them. 
 A policy of the same name is not replaced unless the dialog is told to, since a write replaces
 the whole policy of a vault that may use it for more than this. Policies are assigned by the
 vault's administrator, not by the setup, so the setup grants nobody access.
+
+The KV setup is for either version, each its own part of the setup with its own mount and
+policy names, `kv_creator` and `kv_user` for version 2 and `kv1_creator` and `kv1_user` for version 1,
+and the engine is mounted with the option `version` stated, since the default of an engine is
+Vault's to change. A version 2 policy has to name the `data/` and `metadata/` paths; a version 1
+policy names the mount's paths alone, `<mount>/*` with `list` and the rest, and has no `patch`,
+which version 1 has no call for. The creator policy holds `create`, `update`,
+`patch` and `read` on `<mount>/data/*`, since writing a field of a secret that exists is a patch
+and of one that does not, a create, and `list` on `<mount>/metadata`; the user policy holds `read`
+and `list`. Neither holds `delete`, `destroy` or `sudo`, so a secret cannot be deleted through them.
+The TOTP part and the KV part are chosen separately, may not share a mount or a policy name, and
+run in that order, the TOTP part first, stopping at the first failure.
 
 ## Vault codes are fetched, never computed
 
@@ -259,3 +272,42 @@ an identity provider needs the sign-in window and is checked by hand.
 from the clipboard. The first payload starting with `otpauth://` fills the Add Account dialog
 rather than being added at once, so the name can be changed and a duplicate or invalid code is
 reported the way a typed one is.
+
+## A secret account is a kind of account, in the same list
+
+An account is an OTP account or a secret account (`Account.Kind`, OTP by default). A secret account
+has no algorithm, digits or period that anything reads, but it shares the id, the name, the
+unique-name rule, the menu order and the removal of the other accounts, so the menu, the Accounts
+tab and the stored order need no second list. Everything that computes or shows a code works on
+OTP accounts alone: a secret account is not a shown account, has no window and cannot be chosen
+for the menu bar, so a secret is never drawn on the screen unasked. It is copied, or revealed in
+the Settings window until the user hides it.
+
+## A secret account in the keychain has a service of its own
+
+The items of OTP accounts have the generic attribute `algorithm=...&digits=...&period=...`, and an
+account whose attribute does not parse is dropped, but one with other keys parses as a default
+TOTP account. A secret kept in the OTP service would be read by a build that knows no secret
+accounts as a TOTP secret, and shown as codes computed from a password. A service of its own,
+`...MacAuthenticator.secret`, makes such a build ignore the items.
+
+## A Vault secret is a reference to one field, and the KV version is the user's choice
+
+The reference is the KV version, the mount, the secret's name and the field: a secret is a single
+level of fields, and the account is one of them. The user names the KV version, since the call
+that tells it, `sys/internal/ui/mounts/<mount>`, has no stability guarantee in Vault's
+documentation, and a wrong guess reads or writes the wrong paths. The records of Vault accounts
+in the user defaults gain a kind and a reference, both optional, so records written before
+secret accounts decode as OTP records.
+
+Writing sets one field and keeps the rest of the secret. KV v2 patches the secret
+(`application/merge-patch+json`) and, when it does not exist, creates it with `cas` 0, so a
+concurrent creation is not overwritten. KV v1 has no merge, so the secret is read, the field set
+and the secret written back from the JSON the vault returned, which keeps fields of other types.
+
+## A copied secret is concealed and cleared
+
+A copied secret carries `org.nspasteboard.ConcealedType`, which clipboard managers honour by not
+recording it, and the clipboard is emptied after 30 seconds if its change count is still that of
+the copy, so a later copy of the user's is not lost. A TOTP code expires on its own and is copied
+as plain text.

@@ -76,24 +76,38 @@ struct MenuContent: View {
         } else {
             ForEach(store.accounts) { account in
                 Menu(account.name) {
-                    Button("Copy Code") {
-                        DispatchQueue.main.async { [store] in
-                            Task {
-                                do {
-                                    try await store.copyCode(of: account)
-                                } catch {
-                                    Dialogs.showProblem("The code was not copied", error)
+                    if account.kind == .secret {
+                        Button("Copy Secret") {
+                            DispatchQueue.main.async { [store] in
+                                Task {
+                                    do {
+                                        try await store.copySecret(of: account)
+                                    } catch {
+                                        Dialogs.showProblem("The secret was not copied", error)
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        Button("Copy Code") {
+                            DispatchQueue.main.async { [store] in
+                                Task {
+                                    do {
+                                        try await store.copyCode(of: account)
+                                    } catch {
+                                        Dialogs.showProblem("The code was not copied", error)
+                                    }
+                                }
+                            }
+                        }
+                        Button("Show") {
+                            windows.show(account)
+                        }
+                        Toggle("Show in Menu Bar", isOn: Binding(
+                            get: { store.menuBarAccountID == account.id },
+                            set: { store.setShownInMenuBar(account, $0) }
+                        ))
                     }
-                    Button("Show") {
-                        windows.show(account)
-                    }
-                    Toggle("Show in Menu Bar", isOn: Binding(
-                        get: { store.menuBarAccountID == account.id },
-                        set: { store.setShownInMenuBar(account, $0) }
-                    ))
                 }
             }
         }

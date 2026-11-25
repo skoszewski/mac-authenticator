@@ -117,6 +117,13 @@ struct VaultDevServer: Sendable {
                                                     "algorithm": "SHA256", "digits": 8, "period": 60])
         try await admin("POST", "team/totp/keys/shared", ["key": Self.secret, "account_name": "team"])
 
+        try await admin("POST", "sys/mounts/kv1", ["type": "kv", "options": ["version": "1"]])
+        try await admin("POST", "sys/mounts/kv2", ["type": "kv", "options": ["version": "2"]])
+        try await admin("POST", "kv1/app", ["password": "p1", "other": "keep1"])
+        try await admin("POST", "kv1/dir/inner", ["password": "x"])
+        try await admin("POST", "kv2/data/app", ["data": ["password": "p2", "other": "keep2"]])
+        try await admin("POST", "kv2/data/dir/inner", ["data": ["password": "x"]])
+
         try await admin("PUT", "sys/policies/acl/full", ["policy": Self.policy(listing: true)])
         try await admin("PUT", "sys/policies/acl/nolist", ["policy": Self.policy(listing: false)])
 

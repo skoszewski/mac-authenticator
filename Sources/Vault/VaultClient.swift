@@ -50,6 +50,8 @@ public enum VaultError: LocalizedError, Equatable {
     case oidc(String)
     case keyExists(String)
     case unsupportedKey(String)
+    case noSecret(String)
+    case missingField(field: String, secret: String)
 
     public var errorDescription: String? {
         switch self {
@@ -68,6 +70,10 @@ public enum VaultError: LocalizedError, Equatable {
             return "Vault holds a key named \(name) already; choose another name."
         case let .unsupportedKey(reason):
             return "Vault cannot keep this key: \(reason)"
+        case let .noSecret(name):
+            return "Vault holds no secret named \(name)."
+        case let .missingField(field, secret):
+            return "The secret \(secret) has no field named \(field)."
         }
     }
 
@@ -151,7 +157,8 @@ public struct VaultClient: Sendable {
 
     /// The request for `path` below `/v1/`, with the token and namespace headers.
     func makeRequest(_ method: String, _ path: String, query: [URLQueryItem] = [],
-                     body: [String: any Sendable]? = nil) throws -> URLRequest {
+                     body: [String: any Sendable]? = nil, rawBody: Data? = nil,
+                     contentType: String = "application/json") throws -> URLRequest {
         guard var components = URLComponents(string: configuration.address.trimmingCharacters(in: .whitespaces)),
               let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
               components.host?.isEmpty == false else {
@@ -170,9 +177,9 @@ public struct VaultClient: Sendable {
         if let namespace = configuration.namespace, !namespace.isEmpty {
             request.setValue(namespace, forHTTPHeaderField: "X-Vault-Namespace")
         }
-        if let body {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body = try rawBody ?? body.map({ try JSONSerialization.data(withJSONObject: $0) }) {
+            request.httpBody = body
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
         return request
     }
@@ -180,8 +187,10 @@ public struct VaultClient: Sendable {
     /// Sends the request and returns the body of a successful answer; other answers are errors
     /// carrying Vault's messages.
     func send(_ method: String, _ path: String, query: [URLQueryItem] = [],
-              body: [String: any Sendable]? = nil) async throws -> Data {
-        let (data, response) = try await session.data(for: makeRequest(method, path, query: query, body: body))
+              body: [String: any Sendable]? = nil, rawBody: Data? = nil,
+              contentType: String = "application/json") async throws -> Data {
+        let request = try makeRequest(method, path, query: query, body: body, rawBody: rawBody, contentType: contentType)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw VaultError.badResponse("not an HTTP answer")
         }
@@ -379,8 +388,126 @@ public struct VaultClient: Sendable {
         return try decode(Reply.self, from: try await send("GET", keysPath("code/\(Self.escaped(key))"))).data.code
     }
 
-    private static func escaped(_ name: String) -> String {
+    static func escaped(_ name: String) -> String {
         name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+    }
+}
+
+/// The version of a KV secrets engine.
+public enum KVVersion: Int, Codable, CaseIterable, Sendable {
+    case v1 = 1
+    case v2 = 2
+}
+
+/// One field of a secret of a KV engine: the version of the engine, its mount, the secret's name
+/// and the field. A secret is a single level of fields.
+public struct SecretReference: Codable, Equatable, Sendable {
+    public var version: KVVersion
+    public var mount: String
+    public var name: String
+    public var field: String
+
+    public init(version: KVVersion, mount: String, name: String, field: String) {
+        self.version = version
+        self.mount = mount
+        self.name = name
+        self.field = field
+    }
+
+    /// The reference with its mount and name trimmed of blanks and of slashes at their ends, or the
+    /// error of the part that is empty.
+    public func validated() throws -> SecretReference {
+        func part(_ value: String, _ what: String) throws -> String {
+            let trimmed = VaultClient.trimmed(value.trimmingCharacters(in: .whitespaces))
+            guard !trimmed.isEmpty else {
+                throw EmptyValue(what: what)
+            }
+            return trimmed
+        }
+        let field = field.trimmingCharacters(in: .whitespaces)
+        guard !field.isEmpty else {
+            throw EmptyValue(what: "The field")
+        }
+        return SecretReference(version: version, mount: try part(mount, "The mount"), name: try part(name, "The secret name"),
+                               field: field)
+    }
+}
+
+extension VaultClient {
+    /// The path of a secret's data: the KV v2 engine keeps it below `data/`.
+    private func dataPath(_ reference: SecretReference) -> String {
+        let mount = Self.trimmed(reference.mount)
+        let name = Self.escaped(Self.trimmed(reference.name))
+        return reference.version == .v2 ? "\(mount)/data/\(name)" : "\(mount)/\(name)"
+    }
+
+    /// The fields of the secret as Vault holds them; nil when the secret does not exist.
+    private func secretFields(_ reference: SecretReference) async throws -> [String: Any]? {
+        let data: Data
+        do {
+            data = try await send("GET", dataPath(reference))
+        } catch VaultError.http(let status, _) where status == 404 {
+            return nil
+        }
+        guard let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var fields = reply["data"] as? [String: Any] else {
+            throw VaultError.badResponse("secret")
+        }
+        if reference.version == .v2 {
+            guard let inner = fields["data"] as? [String: Any] else {
+                return nil
+            }
+            fields = inner
+        }
+        return fields
+    }
+
+    /// The text of the secret's field.
+    public func readSecret(_ reference: SecretReference) async throws -> String {
+        guard let fields = try await secretFields(reference) else {
+            throw VaultError.noSecret(reference.name)
+        }
+        guard let value = fields[reference.field] else {
+            throw VaultError.missingField(field: reference.field, secret: reference.name)
+        }
+        guard let text = value as? String else {
+            throw VaultError.badResponse("the field \(reference.field) is not text")
+        }
+        return text
+    }
+
+    /// Sets the field of the secret, creating the secret when it does not exist, and keeps its
+    /// other fields.
+    public func writeSecret(_ reference: SecretReference, value: String) async throws {
+        let path = dataPath(reference)
+        switch reference.version {
+        case .v2:
+            do {
+                _ = try await send("PATCH", path, body: ["data": [reference.field: value]],
+                                   contentType: "application/merge-patch+json")
+            } catch VaultError.http(let status, _) where status == 404 {
+                _ = try await send("POST", path, body: ["options": ["cas": 0], "data": [reference.field: value]])
+            }
+        case .v1:
+            var fields = try await secretFields(reference) ?? [:]
+            fields[reference.field] = value
+            _ = try await send("POST", path, rawBody: try JSONSerialization.data(withJSONObject: fields))
+        }
+    }
+
+    /// The names of the secrets directly below the mount; folders are left out.
+    public func listSecrets(mount: String, version: KVVersion) async throws -> [String] {
+        struct Reply: Decodable {
+            struct Payload: Decodable { let keys: [String] }
+            let data: Payload
+        }
+        let mount = Self.trimmed(mount)
+        do {
+            let data = try await send("LIST", version == .v2 ? "\(mount)/metadata" : mount)
+            return try decode(Reply.self, from: data).data.keys.filter { !$0.hasSuffix("/") }
+        } catch VaultError.http(let status, _) where status == 404 {
+            return []
+        }
     }
 }
 

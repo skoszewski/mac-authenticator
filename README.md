@@ -1,7 +1,8 @@
 # Mac Authenticator
 
 A macOS menu bar app holding TOTP accounts and showing their current codes, in a small window
-floating over the others or beside the menu bar icon. The codes follow RFC 6238 and refresh as
+floating over the others or beside the menu bar icon, and secret accounts, plain strings such as
+passwords that are kept securely and copied on demand. The codes follow RFC 6238 and refresh as
 their period passes. The app shows an icon in the menu bar, and no Dock icon, except while the Settings window is
 open: then the app has a Dock icon and a place in Cmd-Tab.
 
@@ -88,7 +89,9 @@ open "$HOME/Applications/Mac Authenticator.app"
 
 ## The menu
 
-- one submenu for each account, named after it, with:
+- one submenu for each account, named after it; a secret account's submenu has **Copy Secret**,
+  which puts the secret in the clipboard, concealed and cleared after 30 seconds. The submenu of
+  a TOTP account has:
   - **Copy Code** puts the current code in the clipboard;
   - **Show** opens the account's window: the code in two groups of digits, a bar and the
     seconds until it changes, and a **Copy** button. The window floats over the windows of
@@ -157,6 +160,24 @@ A QR code in the clipboard is read from a screenshot or a copied image; Control-
 copies a selected part of the screen. Only `otpauth://totp/` codes are added: `hotp` accounts
 and export codes of other apps, such as `otpauth-migration://`, are refused.
 
+## Secret accounts
+
+An account is one of two kinds: a TOTP account, which shows codes, and a secret account, which
+holds a plain string, such as a password or an encryption key, and shows no code. A secret is kept
+in the login keychain, or in a field of a secret of a Vault KV engine. A secret account is listed
+with the other accounts, with a key symbol, and keeps its place in their order.
+
+**Secret...** in the **+** menu of the Accounts tab asks for a name and the secret, and keeps the
+secret in the login keychain. For a secret account the details pane shows, in place of a code:
+
+- **Reveal**, which shows the secret until **Hide** is chosen or another account is selected;
+- **Copy Secret**, which puts the secret in the clipboard marked as concealed
+  (`org.nspasteboard.ConcealedType`), so clipboard managers that honour it skip it, and empties the
+  clipboard after 30 seconds if it still holds that copy.
+
+A secret account has no window and cannot be shown beside the menu bar icon, so a secret is never
+drawn on the screen unasked.
+
 ## Where the secrets are kept
 
 Each account is one generic password item of the login keychain, with the service
@@ -169,6 +190,12 @@ Each account is one generic password item of the login keychain, with the servic
 - its kind (description) is `Mac Authenticator TOTP secret`;
 - its generic attribute holds the algorithm, digits and period, as
   `algorithm=SHA1&digits=6&period=30`.
+
+A secret account kept in the keychain is an item of the service
+`pl.waw.koszewscy.MacAuthenticator.secret`, of its own so that a build that knows no secret accounts
+does not read a password as a TOTP secret: the item's password is the secret, its account attribute
+the account's id, its name (label) the account's name and its kind (description)
+`Mac Authenticator secret`. A secret is read when it is revealed or copied, and kept nowhere.
 
 The order of the accounts in the menu is kept in the app's user defaults, as a list of ids.
 
@@ -278,21 +305,48 @@ A failure is said in words: what is wrong, what happened, and what to do about i
 runs as the identity the page describes, with the address, method and credential as typed, so an
 administrator's token can be used without saving it; an OIDC vault uses its current sign-in. The
 identity is taken to hold the rights for the calls, and the setup stops at the first call that
-fails. The dialog asks for:
+fails. The dialog has three parts, each switched on or off: the TOTP engine, a KV v2 engine for
+secrets and a KV v1 engine for secrets. For each it asks for:
 
-- the mount of the TOTP engine, taken from the page, and a description;
-- the names of the two policies, `totp_creator` and `totp_user`;
+- the mount, taken from the page for the TOTP engine, `secret` for the KV v2 engine and `kv` for the
+  KV v1 engine, and a description;
+- the names of the two policies: `totp_creator` and `totp_user`, `kv_creator` and `kv_user`, and
+  `kv1_creator` and `kv1_user`;
 - **The engine is already enabled**, which skips enabling it and writes the policies alone;
-- **Replace policies that exist**, without which a policy of the same name stops the setup.
 
-**Run** enables the engine at the mount and writes the policies, and the result lists each step.
-The dialog shows the text of both policies as they will be written:
+and, for both, **Replace policies that exist**, without which a policy of the same name stops the
+setup. The engines need different mounts, and the policies different names.
+
+**Run** enables the engines at their mounts, in the order above, and writes the policies, and the
+result lists each step. The dialog shows the text of the policies as they will be written:
 
 - `totp_creator` lists keys and creates, updates and reads them, which adds and imports a key;
-- `totp_user` lists and reads keys, whose answer holds no secret, and reads codes.
+- `totp_user` lists and reads keys, whose answer holds no secret, and reads codes;
+- `kv_creator` lists the mount's secrets and creates, updates, patches and reads them, which writes
+  a field of a secret that exists or not;
+- `kv_user` lists and reads the secrets;
+- `kv1_creator` lists the mount's secrets and creates, updates and reads them, and `kv1_user` lists
+  and reads them; a KV v1 engine has no `data` or `metadata` paths and no patch.
 
 The setup assigns no policy: a Vault administrator assigns them to the users, roles or tokens
 that need them, both to a user who adds accounts and shows codes.
+
+### Secrets in a KV engine
+
+A secret account can read its secret from a KV engine of a vault, version 1 or 2. The reference is
+one field of one secret: the KV version, the mount, the secret's name and the field's name. A
+secret is a single level of fields, so a field such as `password` or `encryption_key` of the secret
+`app` of the mount `secret`; the app keeps only this reference, and reads the field when the secret
+is revealed or copied.
+
+**Secret from Vault...** in the **+** menu of the Accounts tab asks for the vault, the KV version,
+the mount, the secret and the field, and reads the field once to check the reference; the secrets of
+the mount are listed to pick from when the policy allows listing, and a name can be typed.
+**Secret in Vault...** asks for the same, and for a value, which is set in the field; the secret is
+created when it does not exist, and its other fields are kept (a KV v2 secret is patched, and a KV
+v1 secret is read, changed and written back, so its fields of other types are kept too). The account
+is named as typed, or `<secret>: <field>`. Removing the account does not touch the secret in
+the vault.
 
 ### What the Vault administrator prepares
 
@@ -307,6 +361,12 @@ that need them, both to a user who adds accounts and shows codes.
 
   The `list` rule is optional, and the `read` rule of `totp/keys/*` is needed to add a key.
   Generating or importing a key needs `create` and `update` on `totp/keys/*` as well;
+- for secret accounts, a KV engine and a policy on its paths, which Vault Setup writes as
+  `kv_creator` and `kv_user` for a KV v2 engine and `kv1_creator` and `kv1_user` for a KV v1 one.
+  For the KV v2 mount `secret`, reading needs `read` on `secret/data/<name>`, writing a field needs `patch` and `create`
+  (for a secret that does not exist yet) on it, and listing the secrets needs `list` on
+  `secret/metadata`; for a KV v1 mount, the paths are `secret/<name>` and `secret`, and writing
+  needs `read`, `create` and `update`;
 - for OIDC, a role of the JWT/OIDC method whose `allowed_redirect_uris` holds
   `http://localhost:8250/oidc/callback`, with the port of the settings, and the same URI
   registered with the identity provider.

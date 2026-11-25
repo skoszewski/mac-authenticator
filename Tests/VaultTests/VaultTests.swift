@@ -285,6 +285,72 @@ struct VaultAgainstDevServerTests {
         #expect(checks.last?.problem?.kind == .denied)
     }
 
+    private func reference(_ version: KVVersion, name: String = "app", field: String = "password") -> SecretReference {
+        SecretReference(version: version, mount: "kv\(version.rawValue)", name: name, field: field)
+    }
+
+    @Test(arguments: [KVVersion.v1, .v2])
+    func readsAFieldOfASecret(version: KVVersion) async throws {
+        let vault = client(try server(), token: try server().rootToken)
+        #expect(try await vault.readSecret(reference(version)) == "p\(version.rawValue)")
+        #expect(try await vault.readSecret(reference(version, field: "other")) == "keep\(version.rawValue)")
+    }
+
+    @Test(arguments: [KVVersion.v1, .v2])
+    func aMissingSecretOrFieldIsNamed(version: KVVersion) async throws {
+        let vault = client(try server(), token: try server().rootToken)
+        await #expect(throws: VaultError.noSecret("nothing")) {
+            try await vault.readSecret(reference(version, name: "nothing"))
+        }
+        await #expect(throws: VaultError.missingField(field: "nope", secret: "app")) {
+            try await vault.readSecret(reference(version, field: "nope"))
+        }
+    }
+
+    @Test(arguments: [KVVersion.v1, .v2])
+    func writingAFieldKeepsTheOtherFields(version: KVVersion) async throws {
+        let vault = client(try server(), token: try server().rootToken)
+        try await vault.writeSecret(reference(version, name: "kept", field: "first"), value: "one")
+        try await vault.writeSecret(reference(version, name: "kept", field: "second"), value: "two")
+        try await vault.writeSecret(reference(version, name: "kept", field: "first"), value: "three")
+        #expect(try await vault.readSecret(reference(version, name: "kept", field: "first")) == "three")
+        #expect(try await vault.readSecret(reference(version, name: "kept", field: "second")) == "two")
+    }
+
+    @Test(arguments: [KVVersion.v1, .v2])
+    func writingAFieldKeepsAFieldOfAnotherType(version: KVVersion) async throws {
+        let server = try server()
+        let vault = client(server, token: server.rootToken)
+        if version == .v1 {
+            try await server.admin("POST", "kv1/typed", ["count": 3])
+        } else {
+            try await server.admin("POST", "kv2/data/typed", ["data": ["count": 3]])
+        }
+        try await vault.writeSecret(reference(version, name: "typed", field: "password"), value: "pw")
+        let reply = try await server.admin("GET", version == .v1 ? "kv1/typed" : "kv2/data/typed")
+        let data = try #require(reply["data"] as? [String: Any])
+        let fields = try #require(version == .v1 ? data : data["data"] as? [String: Any])
+        #expect(fields["count"] as? Int == 3)
+        #expect(fields["password"] as? String == "pw")
+    }
+
+    @Test(arguments: [KVVersion.v1, .v2])
+    func listsTheSecretsOfAMountWithoutFolders(version: KVVersion) async throws {
+        let vault = client(try server(), token: try server().rootToken)
+        let names = try await vault.listSecrets(mount: "kv\(version.rawValue)/", version: version)
+        #expect(names.contains("app"))
+        #expect(!names.contains("dir/"))
+        #expect(try await vault.listSecrets(mount: "nowhere", version: version).isEmpty)
+    }
+
+    @Test func aSecretReferenceIsTrimmedAndRefusedWhenAPartIsEmpty() throws {
+        let trimmed = try SecretReference(version: .v2, mount: " /kv2/ ", name: "app/", field: " password ").validated()
+        #expect(trimmed == SecretReference(version: .v2, mount: "kv2", name: "app", field: "password"))
+        #expect(throws: (any Error).self) { try SecretReference(version: .v1, mount: "", name: "a", field: "f").validated() }
+        #expect(throws: (any Error).self) { try SecretReference(version: .v1, mount: "m", name: " ", field: "f").validated() }
+        #expect(throws: (any Error).self) { try SecretReference(version: .v1, mount: "m", name: "a", field: "").validated() }
+    }
+
     @Test(arguments: ["localhost", "127.0.0.1", "127.1.2.3", "::1"])
     func aHostOfThisMacResolvesToLoopback(host: String) async {
         #expect(await VaultDiagnostics.resolvesToLoopback(host))
@@ -357,6 +423,71 @@ struct VaultAgainstDevServerTests {
 
         options.overwritePolicies = true
         #expect(await VaultSetup.run(client: root, options: options).map(\.outcome) == [.skipped, .passed, .passed])
+    }
+
+    @Test func theSetupOfAKVEngineLetsTheCreatorWriteAndTheUserRead() async throws {
+        let server = try server()
+        let root = client(server, token: server.rootToken)
+        let kv = KVSetupOptions(mount: "setup-e/kv", creatorPolicy: "setup_e_creator", userPolicy: "setup_e_user")
+        let checks = await VaultSetup.run(client: root, options: VaultSetupOptions(totp: false, kv: kv))
+        #expect(checks.map(\.step) == ["KV v2 engine", "KV v2 creator policy", "KV v2 user policy"])
+        #expect(checks.map(\.outcome) == [.passed, .passed, .passed])
+
+        let reference = SecretReference(version: .v2, mount: "setup-e/kv", name: "app", field: "password")
+        let creator = client(server, token: try await server.token(policy: "setup_e_creator"))
+        try await creator.writeSecret(reference, value: "one")
+        try await creator.writeSecret(SecretReference(version: .v2, mount: "setup-e/kv", name: "app", field: "second"), value: "two")
+        #expect(try await creator.readSecret(reference) == "one")
+        #expect(try await creator.listSecrets(mount: "setup-e/kv", version: .v2) == ["app"])
+
+        let user = client(server, token: try await server.token(policy: "setup_e_user"))
+        #expect(try await user.readSecret(reference) == "one")
+        #expect(try await user.listSecrets(mount: "setup-e/kv", version: .v2) == ["app"])
+        await #expect { try await user.writeSecret(reference, value: "three") } throws: { isDenied($0) }
+    }
+
+    @Test func theSetupOfAKVv1EngineLetsTheCreatorWriteAndTheUserRead() async throws {
+        let server = try server()
+        let root = client(server, token: server.rootToken)
+        let kv = KVSetupOptions(version: .v1, mount: "setup-g/kv", creatorPolicy: "setup_g_creator", userPolicy: "setup_g_user")
+        let checks = await VaultSetup.run(client: root, options: VaultSetupOptions(totp: false, kv1: kv))
+        #expect(checks.map(\.step) == ["KV v1 engine", "KV v1 creator policy", "KV v1 user policy"])
+        #expect(checks.map(\.outcome) == [.passed, .passed, .passed])
+
+        let reference = SecretReference(version: .v1, mount: "setup-g/kv", name: "app", field: "password")
+        let creator = client(server, token: try await server.token(policy: "setup_g_creator"))
+        try await creator.writeSecret(reference, value: "one")
+        try await creator.writeSecret(SecretReference(version: .v1, mount: "setup-g/kv", name: "app", field: "second"), value: "two")
+        #expect(try await creator.readSecret(reference) == "one")
+        #expect(try await creator.listSecrets(mount: "setup-g/kv", version: .v1) == ["app"])
+
+        let user = client(server, token: try await server.token(policy: "setup_g_user"))
+        #expect(try await user.readSecret(reference) == "one")
+        #expect(try await user.listSecrets(mount: "setup-g/kv", version: .v1) == ["app"])
+        await #expect { try await user.writeSecret(reference, value: "three") } throws: { isDenied($0) }
+    }
+
+    @Test func theSetupOfEveryEngineRunsTheTOTPStepsFirstThenKVv2ThenKVv1() async throws {
+        let server = try server()
+        let options = VaultSetupOptions(mount: "setup-h/totp", creatorPolicy: "setup_h_creator", userPolicy: "setup_h_user",
+                                        kv: KVSetupOptions(mount: "setup-h/kv2", creatorPolicy: "setup_h_kv2_creator",
+                                                           userPolicy: "setup_h_kv2_user"),
+                                        kv1: KVSetupOptions(version: .v1, mount: "setup-h/kv1", creatorPolicy: "setup_h_kv1_creator",
+                                                            userPolicy: "setup_h_kv1_user"))
+        let checks = await VaultSetup.run(client: client(server, token: server.rootToken), options: options)
+        #expect(checks.map(\.step).filter { $0.lowercased().hasSuffix("engine") } == ["Engine", "KV v2 engine", "KV v1 engine"])
+        #expect(checks.count == 9)
+        #expect(checks.allSatisfy { $0.outcome == .passed })
+    }
+
+    @Test func theSetupOfBothEnginesRunsTheTOTPStepsFirst() async throws {
+        let server = try server()
+        let options = VaultSetupOptions(mount: "setup-f/totp", creatorPolicy: "setup_f_creator", userPolicy: "setup_f_user",
+                                        kv: KVSetupOptions(mount: "setup-f/kv", creatorPolicy: "setup_f_kv_creator",
+                                                           userPolicy: "setup_f_kv_user"))
+        let checks = await VaultSetup.run(client: client(server, token: server.rootToken), options: options)
+        #expect(checks.map(\.step) == ["Engine", "Creator policy", "User policy", "KV v2 engine", "KV v2 creator policy", "KV v2 user policy"])
+        #expect(checks.allSatisfy { $0.outcome == .passed })
     }
 
     @Test func theSetupStopsAtTheFirstCallThatIsDenied() async throws {
@@ -545,6 +676,29 @@ struct VaultAgainstDevServerTests {
         #expect(!policy.contains("create"))
     }
 
+    @Test func theKVCreatorPolicyListsAndWritesAndReadsSecrets() {
+        let policy = VaultSetup.kvCreatorPolicy(mount: "secret")
+        #expect(policy.contains("path \"secret/metadata\" {\n  capabilities = [\"list\"]"))
+        #expect(policy.contains("path \"secret/data/*\" {\n  capabilities = [\"create\", \"update\", \"patch\", \"read\"]"))
+        #expect(!policy.contains("delete"))
+    }
+
+    @Test func theKVUserPolicyListsAndReadsSecrets() {
+        let policy = VaultSetup.kvUserPolicy(mount: "/team/secret/")
+        #expect(policy.contains("path \"team/secret/metadata\" {\n  capabilities = [\"list\"]"))
+        #expect(policy.contains("path \"team/secret/data/*\" {\n  capabilities = [\"read\"]"))
+        #expect(!policy.contains("create"))
+    }
+
+    @Test func theKVv1PoliciesNameTheMountsPathsWithoutDataOrMetadata() {
+        let creator = VaultSetup.kvCreatorPolicy(mount: "kv", version: .v1)
+        #expect(creator.contains("path \"kv/*\" {\n  capabilities = [\"list\", \"create\", \"update\", \"read\"]"))
+        #expect(!creator.contains("data") && !creator.contains("metadata") && !creator.contains("patch"))
+        let user = VaultSetup.kvUserPolicy(mount: "/kv/", version: .v1)
+        #expect(user.contains("path \"kv/*\" {\n  capabilities = [\"list\", \"read\"]"))
+        #expect(!user.contains("create"))
+    }
+
     @Test func aMountIsTrimmedAndMayBeNested() {
         let policy = VaultSetup.userPolicy(mount: "/team/totp/")
         #expect(policy.contains("path \"team/totp/keys\""))
@@ -557,6 +711,14 @@ struct VaultAgainstDevServerTests {
         VaultSetupOptions(creatorPolicy: ""),
         VaultSetupOptions(userPolicy: "has space"),
         VaultSetupOptions(creatorPolicy: "same", userPolicy: "same"),
+        VaultSetupOptions(totp: false),
+        VaultSetupOptions(kv: KVSetupOptions(mount: "totp")),
+        VaultSetupOptions(kv: KVSetupOptions(mount: "")),
+        VaultSetupOptions(kv: KVSetupOptions(creatorPolicy: "totp_creator")),
+        VaultSetupOptions(kv: KVSetupOptions(userPolicy: "has space")),
+        VaultSetupOptions(kv: KVSetupOptions(), kv1: KVSetupOptions(version: .v1, mount: "secret")),
+        VaultSetupOptions(kv: KVSetupOptions(), kv1: KVSetupOptions(version: .v1, creatorPolicy: "kv_creator")),
+        VaultSetupOptions(totp: false, kv1: KVSetupOptions(version: .v1, mount: "")),
     ])
     func optionsThatCannotBeUsedAreRefused(options: VaultSetupOptions) {
         #expect(VaultSetup.problem(of: options) != nil)
@@ -564,5 +726,9 @@ struct VaultAgainstDevServerTests {
 
     @Test func theDefaultsAreUsable() {
         #expect(VaultSetup.problem(of: VaultSetupOptions()) == nil)
+        #expect(VaultSetup.problem(of: VaultSetupOptions(kv: KVSetupOptions())) == nil)
+        #expect(VaultSetup.problem(of: VaultSetupOptions(totp: false, kv: KVSetupOptions())) == nil)
+        #expect(VaultSetup.problem(of: VaultSetupOptions(totp: false, kv1: KVSetupOptions(version: .v1))) == nil)
+        #expect(VaultSetup.problem(of: VaultSetupOptions(kv: KVSetupOptions(), kv1: KVSetupOptions(version: .v1))) == nil)
     }
 }

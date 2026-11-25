@@ -75,6 +75,12 @@ public struct VaultProblem: Equatable, Sendable {
         case let .keyExists(name):
             return VaultProblem(kind: .other, title: "The key exists", detail: "The vault holds a key named \(name).",
                                 suggestion: "Choose another name.")
+        case let .noSecret(name):
+            return VaultProblem(kind: .server, title: "The secret does not exist", detail: "The vault holds no secret named \(name).",
+                                suggestion: "Check the KV version, the mount and the secret name.")
+        case let .missingField(field, secret):
+            return VaultProblem(kind: .other, title: "The secret has no such field", detail: "The secret \(secret) holds no field named \(field).",
+                                suggestion: "Check the name of the field.")
         case let .unsupportedKey(reason):
             return VaultProblem(kind: .other, title: "The vault cannot keep this key", detail: reason,
                                 suggestion: "Use a key of 6 or 8 digits.")
