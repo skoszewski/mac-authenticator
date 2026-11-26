@@ -67,6 +67,10 @@ private struct VaultRecord: Codable {
     var reference: SecretReference?
     /// Whether the secret account asks the user to authenticate; absent means it does.
     var authenticate: Bool?
+    /// The seconds after an authentication during which it is not asked for again; absent means 0.
+    var authenticateSeconds: Int?
+    /// The seconds after which a shown secret is hidden; absent means 30, and 0 never hides it.
+    var hideSeconds: Int?
     var added: Date
 }
 
@@ -130,6 +134,10 @@ final class AccountStore {
     /// The change count of the clipboard right after a secret was copied to it.
     @ObservationIgnored private var copiedSecret: Int?
     @ObservationIgnored private var quitObserver: NSObjectProtocol?
+    /// When the user last authenticated; forgotten when the computer or its screens wake and when the
+    /// user session switches out or in, so that the next secret asks again.
+    @ObservationIgnored private var lastAuthentication: Date?
+    @ObservationIgnored private var sessionObservers: [NSObjectProtocol] = []
 
     var menuBarAccount: Account? {
         accounts.first { $0.id == menuBarAccountID }
@@ -149,6 +157,16 @@ final class AccountStore {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        sessionObservers = [
+            NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification,
+        ].map { name in
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.lastAuthentication = nil
+                }
+            }
+        }
         quitObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -178,7 +196,10 @@ final class AccountStore {
             let order = UserDefaults.standard.stringArray(forKey: "accountOrder") ?? []
             let vaultListed = vaultRecords.compactMap { record in
                 let account = record.kind == .secret
-                    ? Account(secretID: record.id, name: record.name, requiresAuthentication: record.authenticate ?? true)
+                    ? Account(secretID: record.id, name: record.name,
+                              settings: SecretSettings(requiresAuthentication: record.authenticate ?? true,
+                                                       authenticationSeconds: record.authenticateSeconds ?? 0,
+                                                       hideSeconds: record.hideSeconds ?? SecretSettings.defaultHideSeconds))
                     : try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters)
                 return account.map { Keychain.Listed(account: $0, created: record.added) }
             }
@@ -215,7 +236,8 @@ final class AccountStore {
     func addVaultAccount(_ account: Account, key: String, profile: UUID) throws {
         try checkCanAdd(named: account.name)
         vaultRecords.append(VaultRecord(id: account.id, kind: nil, profile: profile, name: account.name, issuer: account.issuer,
-                                        parameters: account.parameters, key: key, reference: nil, authenticate: nil,
+                                        parameters: account.parameters, key: key, reference: nil, authenticate: nil, authenticateSeconds: nil,
+                                        hideSeconds: nil,
                                         added: Date()))
         saveVaultRecords()
         vaultKeys[account.id] = VaultKey(profile: profile, key: key)
@@ -224,7 +246,7 @@ final class AccountStore {
     }
 
     /// Adds a secret account whose secret is kept in the keychain.
-    func addSecret(name: String, value: String, requiresAuthentication: Bool) throws {
+    func addSecret(name: String, value: String, settings: SecretSettings) throws {
         let name = name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {
             throw StoreError.missingName
@@ -233,24 +255,26 @@ final class AccountStore {
             throw StoreError.emptySecret
         }
         try checkCanAdd(named: name)
-        let account = Account(secretID: UUID(), name: name, requiresAuthentication: requiresAuthentication)
-        try Keychain.addSecret(id: account.id, name: name, value: value, requiresAuthentication: requiresAuthentication)
+        let account = Account(secretID: UUID(), name: name, settings: settings)
+        try Keychain.addSecret(id: account.id, name: name, value: value, settings: settings)
         accounts.append(account)
         saveOrder()
     }
 
     /// Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret
     /// is kept for it.
-    func addVaultSecret(name: String, reference: SecretReference, profile: UUID, requiresAuthentication: Bool) throws {
+    func addVaultSecret(name: String, reference: SecretReference, profile: UUID, settings: SecretSettings) throws {
         let name = name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {
             throw StoreError.missingName
         }
         try checkCanAdd(named: name)
-        let account = Account(secretID: UUID(), name: name, requiresAuthentication: requiresAuthentication)
+        let account = Account(secretID: UUID(), name: name, settings: settings)
         vaultRecords.append(VaultRecord(id: account.id, kind: .secret, profile: profile, name: name, issuer: nil,
                                         parameters: "", key: "", reference: reference,
-                                        authenticate: requiresAuthentication, added: Date()))
+                                        authenticate: settings.requiresAuthentication,
+                                        authenticateSeconds: settings.authenticationSeconds,
+                                        hideSeconds: settings.hideSeconds, added: Date()))
         saveVaultRecords()
         vaultSecrets[account.id] = VaultSecret(profile: profile, reference: reference)
         accounts.append(account)
@@ -415,27 +439,47 @@ final class AccountStore {
         return try await session.authorized("Reading the secret") { try await $0.readSecret(reference) }
     }
 
-    /// Sets whether showing or copying a secret account's secret asks the user to authenticate.
-    func setRequiresAuthentication(_ account: Account, _ required: Bool) throws {
+    /// Sets how a secret account's secret is protected and shown.
+    func setSecretSettings(_ account: Account, _ settings: SecretSettings) throws {
         guard loadError == nil else {
             throw StoreError.notLoaded
         }
         if let index = vaultRecords.firstIndex(where: { $0.id == account.id }) {
-            vaultRecords[index].authenticate = required
+            vaultRecords[index].authenticate = settings.requiresAuthentication
+            vaultRecords[index].authenticateSeconds = settings.authenticationSeconds
+            vaultRecords[index].hideSeconds = settings.hideSeconds
             saveVaultRecords()
         } else {
-            try Keychain.setSecretAuthentication(account.id, required: required)
+            try Keychain.setSecretSettings(account.id, settings)
         }
         if let index = accounts.firstIndex(where: { $0.id == account.id }) {
-            accounts[index].requiresAuthentication = required
+            accounts[index].settings = settings
         }
     }
 
+    /// Whether the user must authenticate to see or copy the secret: the account asks, and has not been
+    /// authenticated for fewer seconds than it allows.
+    private func needsAuthentication(_ account: Account) -> Bool {
+        guard account.settings.requiresAuthentication else {
+            return false
+        }
+        if account.settings.authenticationSeconds > 0, let last = lastAuthentication,
+           Date().timeIntervalSince(last) < Double(account.settings.authenticationSeconds) {
+            return false
+        }
+        return true
+    }
+
     /// Asks the user to authenticate, with Touch ID, Apple Watch or the password, before a secret is
-    /// shown or copied; false when the user cancels, an error otherwise.
+    /// shown or copied; false when the user cancels, an error otherwise. A success is remembered, for
+    /// the accounts that allow a time without asking.
     private func authenticated(for reason: String) async throws -> Bool {
         do {
-            return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            let done = try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            if done {
+                lastAuthentication = Date()
+            }
+            return done
         } catch let error as LAError where [.userCancel, .appCancel, .systemCancel].contains(error.code) {
             return false
         }
@@ -444,7 +488,7 @@ final class AccountStore {
     /// The text of a secret account, for the user to look at, after the user authenticates when the
     /// account asks for it; nil when the user cancels. Nothing is kept of it.
     func revealSecret(of account: Account) async throws -> String? {
-        if account.requiresAuthentication, try await !authenticated(for: "show the secret \(account.name)") {
+        if needsAuthentication(account), try await !authenticated(for: "show the secret \(account.name)") {
             return nil
         }
         return try await secretValue(of: account)
@@ -455,7 +499,7 @@ final class AccountStore {
     /// concealed, and empties the clipboard after 30 seconds, or when the app quits, if it still holds
     /// that copy. Nothing is copied when the user cancels.
     func copySecret(of account: Account) async throws {
-        if account.requiresAuthentication, try await !authenticated(for: "copy the secret \(account.name)") {
+        if needsAuthentication(account), try await !authenticated(for: "copy the secret \(account.name)") {
             return
         }
         let value = try await secretValue(of: account)

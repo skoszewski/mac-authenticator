@@ -93,8 +93,31 @@ authenticate first, with Touch ID, an Apple Watch or the password, as for macOS'
 items; cancelling the prompt does nothing. When it is off they act at once. An account without
 the setting, such as one kept by an earlier build, asks.
 
-A secret account has no window and cannot be shown beside the menu bar icon, so a secret is never
-drawn on the screen unasked.
+Next to it is **Reauthenticate after**, a number of seconds, 0 by default. After the user
+authenticates, a secret whose number is above 0 is shown or copied without asking again until that
+many seconds have passed since the authentication; with 0 it asks every time. An authentication
+counts for every secret that allows the time since it, and it is forgotten, so that every secret asks
+again, when the computer wakes, when the screens wake, and when the user session switches out or in.
+Locking the screen while the display stays on does not forget it, since macOS has no documented
+signal for that.
+
+**Hide after** is the number of seconds a shown secret stays shown, 30 by default; 0 never hides it,
+for development and lab use. It applies to Reveal in the details pane, which shows a bar and the
+seconds left like a code window, and to the secret window.
+
+**Show**, in the secret's submenu, and **Show Window**, in its details pane, open the secret window,
+a small panel that floats over the other windows on every Space, like a code window. The secret is
+masked as `********`, and a click on it reads the secret, after the authentication its settings ask
+for, and shows it with a bar and the seconds left, in the font size of a code; when the time ends,
+or the window is closed, the secret is masked again. The secret is kept on one line: the window
+opens as wide as the secret needs, up to a maximum width, and a secret that does not fit is shown in
+a smaller font; the window can be resized, and it refuses to become narrower than the secret needs in
+the smallest font. After the user resizes it, it keeps that size until it is closed. Hiding the secret again does not
+change the size of the window. A secret longer
+than 64 characters is not shown at all: the window says so and only offers **Copy**. With a hide time
+of 0 the bar is replaced by a **Hide** button. **Copy**
+copies the secret as Copy Secret does. A secret account cannot be shown beside the menu bar icon, so
+a secret is never drawn on the screen unasked.
 
 ## Where the secrets are kept
 

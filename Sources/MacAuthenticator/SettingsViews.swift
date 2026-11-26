@@ -197,6 +197,35 @@ private struct AccountDetails: View {
         store.vaultProfile(of: account).flatMap { store.vault(for: $0) }?.activity != nil
     }
 
+    /// Changes the secret's settings, and tells the user when that fails.
+    private func change(_ edit: (inout SecretSettings) -> Void) {
+        var settings = account.settings
+        edit(&settings)
+        do {
+            try store.setSecretSettings(account, settings)
+        } catch {
+            Dialogs.showProblem("The setting was not changed", error)
+        }
+    }
+
+    /// A row with a number of seconds of the secret's settings.
+    private func secondsRow(_ title: String, _ setting: WritableKeyPath<SecretSettings, Int>) -> some View {
+        LabeledContent(title) {
+            HStack {
+                TextField("Seconds", value: Binding(
+                    get: { account.settings[keyPath: setting] },
+                    set: { seconds in
+                        change { $0[keyPath: setting] = max(0, seconds) }
+                    }
+                ), format: .number)
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .frame(width: 80)
+                Text("seconds")
+            }
+        }
+    }
+
     var body: some View {
         Form {
             if let problem = store.problem(of: account) {
@@ -233,20 +262,28 @@ private struct AccountDetails: View {
             if account.kind == .secret {
                 Section("Secret") {
                     Toggle("Ask to authenticate before it is shown or copied", isOn: Binding(
-                        get: { account.requiresAuthentication },
+                        get: { account.settings.requiresAuthentication },
                         set: { required in
-                            do {
-                                try store.setRequiresAuthentication(account, required)
-                            } catch {
-                                Dialogs.showProblem("The setting was not changed", error)
-                            }
+                            change { $0.requiresAuthentication = required }
                         }
                     ))
+                    secondsRow("Reauthenticate after", \.authenticationSeconds)
+                        .disabled(!account.settings.requiresAuthentication)
+                    secondsRow("Hide after", \.hideSeconds)
                     let revealed = router.revealedID == account.id ? router.revealed : nil
                     if let revealed {
                         Text(revealed)
                             .font(.system(.body, design: .monospaced))
                             .textSelection(.enabled)
+                        if let until = router.revealedUntil, router.revealedTotal > 0 {
+                            let left = max(0, Int(until.timeIntervalSince(store.now).rounded(.up)))
+                            HStack {
+                                ProgressView(value: Double(left), total: Double(router.revealedTotal))
+                                Text("\(left)s")
+                                    .monospacedDigit()
+                                    .frame(width: 40, alignment: .trailing)
+                            }
+                        }
                     }
                     HStack {
                         Button(revealed == nil ? "Reveal" : "Hide") {
@@ -257,8 +294,7 @@ private struct AccountDetails: View {
                             Task {
                                 do {
                                     if let value = try await store.revealSecret(of: account) {
-                                        router.revealed = value
-                                        router.revealedID = account.id
+                                        router.reveal(value, of: account.id, for: account.settings.hideSeconds)
                                     }
                                 } catch is CancellationError {
                                 } catch {
@@ -278,6 +314,9 @@ private struct AccountDetails: View {
                             }
                         }
                         .disabled(vaultBusy)
+                        Button("Show Window") {
+                            windows.show(account)
+                        }
                     }
                 }
             } else {

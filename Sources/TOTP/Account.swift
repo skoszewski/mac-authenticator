@@ -8,6 +8,61 @@ public enum Algorithm: String, CaseIterable, Sendable {
     case sha512 = "SHA512"
 }
 
+/// How a secret account's secret is protected and shown: whether showing or copying it asks the user to
+/// authenticate, the seconds after an authentication during which it is not asked for again (0 asks
+/// every time), and the seconds after which a shown secret is hidden again (0 never hides it).
+public struct SecretSettings: Equatable, Sendable {
+    public static let defaultHideSeconds = 30
+
+    public var requiresAuthentication: Bool
+    public var authenticationSeconds: Int
+    public var hideSeconds: Int
+
+    public init(requiresAuthentication: Bool = true, authenticationSeconds: Int = 0,
+                hideSeconds: Int = SecretSettings.defaultHideSeconds) {
+        self.requiresAuthentication = requiresAuthentication
+        self.authenticationSeconds = max(0, authenticationSeconds)
+        self.hideSeconds = max(0, hideSeconds)
+    }
+
+    /// The settings from their stored text, `authenticate=1&seconds=60&hide=30`; a key that is left
+    /// out takes its default, and so does an empty text. A text that is not `key=value` pairs, or
+    /// holds a value that is not valid, is nil. The form `authenticate=0` is read as well.
+    public init?(attribute: String) {
+        var values: [String: String] = [:]
+        for pair in attribute.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else {
+                return nil
+            }
+            values[String(parts[0])] = String(parts[1])
+        }
+        var settings = SecretSettings()
+        switch values["authenticate"] {
+        case nil, "1":
+            settings.requiresAuthentication = true
+        case "0":
+            settings.requiresAuthentication = false
+        default:
+            return nil
+        }
+        for (key, keyPath) in [("seconds", \SecretSettings.authenticationSeconds), ("hide", \SecretSettings.hideSeconds)] {
+            if let text = values[key] {
+                guard let number = Int(text), number >= 0 else {
+                    return nil
+                }
+                settings[keyPath: keyPath] = number
+            }
+        }
+        self = settings
+    }
+
+    /// The stored text of the settings.
+    public var attribute: String {
+        "authenticate=\(requiresAuthentication ? 1 : 0)&seconds=\(authenticationSeconds)&hide=\(hideSeconds)"
+    }
+}
+
 /// A registered account: its name and, for an OTP account, the RFC 6238 parameters of its codes,
 /// without its secret. A secret account holds a plain string and has no codes; its algorithm,
 /// digits and period are the defaults, which nothing reads.
@@ -21,9 +76,8 @@ public struct Account: Identifiable, Equatable, Sendable {
 
     public var id: UUID
     public var kind = Kind.otp
-    /// Whether showing or copying a secret account's secret asks the user to authenticate; nothing
-    /// reads it for an OTP account.
-    public var requiresAuthentication = true
+    /// How a secret account's secret is protected and shown; nothing reads it for an OTP account.
+    public var settings = SecretSettings()
     public var name: String
     public var issuer: String?
     public var algorithm: Algorithm
@@ -47,10 +101,10 @@ public struct Account: Identifiable, Equatable, Sendable {
     }
 
     /// A secret account.
-    public init(secretID id: UUID = UUID(), name: String, requiresAuthentication: Bool = true) {
+    public init(secretID id: UUID = UUID(), name: String, settings: SecretSettings = SecretSettings()) {
         self.id = id
         self.kind = .secret
-        self.requiresAuthentication = requiresAuthentication
+        self.settings = settings
         self.name = name
         self.issuer = nil
         self.algorithm = .sha1

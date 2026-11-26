@@ -289,9 +289,10 @@ An account is an OTP account or a secret account (`Account.Kind`, OTP by default
 has no algorithm, digits or period that anything reads, but it shares the id, the name, the
 unique-name rule, the menu order and the removal of the other accounts, so the menu, the Accounts
 tab and the stored order need no second list. Everything that computes or shows a code works on
-OTP accounts alone: a secret account is not a shown account, has no window and cannot be chosen
-for the menu bar, so a secret is never drawn on the screen unasked. It is copied, or revealed in
-the Settings window until the user hides it.
+OTP accounts alone: a secret account is not a shown account, so the store never reads its secret for
+a window, and it cannot be chosen for the menu bar, so a secret is never drawn on the screen
+unasked. It is copied, revealed in the Settings window, or shown in a window of its own that the user
+clicks to unmask (see the entry on the secret window).
 
 ## A secret account in the keychain has a service of its own
 
@@ -329,8 +330,15 @@ ID, an Apple Watch or the user's password, so a person at an unlocked Mac cannot
 the app holds in the keychain or fetches from Vault. Whether a secret asks is the account's own
 setting, since a password that guards little is a nuisance to authenticate for on every copy and a
 key that guards much is not: it is kept in the generic attribute of a keychain secret
-(`authenticate=0` or `authenticate=1`) and in the record of a Vault secret, and a secret without it
-asks, as every secret did before the setting existed. A cancelled prompt does nothing and shows no
+(`authenticate=0`, or `authenticate=1&seconds=N`) and in the record of a Vault secret, and a secret
+without it asks every time, as every secret did before the setting existed. The seconds are the time
+after an authentication during which the secret does not ask again, 0 asking every time. The time of
+the last authentication is one for the app, not one for each secret, since an authentication proves
+the user is there, and each secret decides how long that proof is good for. It is forgotten when the
+computer wakes, when the screens wake, and when the user session switches out or in, the
+`NSWorkspace` notifications that Apple documents; the screen being locked has no documented
+notification, and the undocumented distributed ones were not used, so a lock while the display stays
+on does not forget it. A cancelled prompt does nothing and shows no
 error. A revealed secret is hidden when the Settings window loses the keyboard or closes, since the
 window is kept hidden and its state would show the secret again, and the clipboard copy of a secret
 is emptied when the app quits as well as after 30 seconds. The revealed value lives in the router
@@ -372,3 +380,30 @@ modal alert would nest inside the one that waits. The bar at the bottom of the S
 always there with a fixed height, so the window does not move when it fills. The 60 second timeout of
 URLSession is kept; the wait and a Cancel button are shown instead of a shorter timeout, which would
 fail slow but working vaults.
+
+## A secret window masks the secret and a countdown hides it again
+
+A secret account has a floating window like a code window, for a secret that is read many times in a
+sitting. The secret is masked until the user clicks, since a window that floats over other apps would
+otherwise show it to anyone looking; the click reads it, after the authentication the secret's
+settings ask for, and a countdown hides it again after the secret's own number of seconds, or never
+for 0, which is for development and lab use where hiding is a nuisance. The window keeps the secret
+in a model of its own, not in the store, and closing the window hides it, because the panel is kept
+and its state would show the secret again when it is reopened. Reveal in the Settings pane follows
+the same hide time. A secret that is shown stays shown while the computer wakes or the screen locks;
+only the authentication is forgotten then.
+
+A shown secret stays on one line, since a secret that wraps is hard to read and compare: the font
+shrinks to fit the width, down to 12 points, and the window cannot be made narrower than that needs;
+the width it opens with is the secret's on one line, up to 520 points, and the user's own resizing is
+then left alone until the window is closed. Only showing a secret fits the window to it; hiding it
+leaves the window as it is, so a window the user sized, or that a longer secret widened, does not jump
+back when the secret is concealed. A secret of more than 64 characters is not shown in a
+window, since even the smallest font would not keep it on one line in a window of a sensible width, and
+a secret that long is a key or a token that is copied, not read; the window offers Copy for it, and
+discards the text it read. Reveal in the Settings pane has no such limit.
+
+The three settings of a secret, whether it asks, the seconds it stays authenticated and the seconds
+it stays shown, are one value, `SecretSettings`, stored as one text, `authenticate=1&seconds=60&hide=30`,
+in the generic attribute of a keychain secret and as three optional fields in the record of a Vault
+secret; a missing key takes its default, so the earlier forms still read.

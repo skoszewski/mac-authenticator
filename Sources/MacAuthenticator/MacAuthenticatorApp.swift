@@ -94,6 +94,9 @@ struct MenuContent: View {
                                 }
                             }
                         }
+                        Button("Show") {
+                            windows.show(account)
+                        }
                     } else {
                         Button("Copy Code") {
                             DispatchQueue.main.async { [store] in

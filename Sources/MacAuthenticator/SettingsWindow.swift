@@ -17,10 +17,36 @@ final class SettingsRouter {
     /// loses the keyboard.
     var revealed: String?
     var revealedID: UUID?
+    /// When the revealed secret is hidden again, and the seconds it was shown for; nil and 0 never hide it.
+    var revealedUntil: Date?
+    var revealedTotal = 0
+    @ObservationIgnored private var hideTask: Task<Void, Never>?
 
     func hideSecret() {
+        hideTask?.cancel()
+        hideTask = nil
         revealed = nil
         revealedID = nil
+        revealedUntil = nil
+        revealedTotal = 0
+    }
+
+    /// Shows the secret of the account, and hides it after the seconds, or never for 0.
+    func reveal(_ value: String, of id: UUID, for seconds: Int) {
+        hideSecret()
+        revealed = value
+        revealedID = id
+        revealedTotal = seconds
+        guard seconds > 0 else {
+            return
+        }
+        revealedUntil = Date().addingTimeInterval(Double(seconds))
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            if !Task.isCancelled {
+                self?.hideSecret()
+            }
+        }
     }
 }
 

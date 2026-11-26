@@ -290,9 +290,10 @@ enum Dialogs {
         nameField.placeholderString = "Name of the account"
         let secretField = NSSecureTextField()
         secretField.placeholderString = "The password or key to keep"
-        let authenticate = NSButton(checkboxWithTitle: "Ask to authenticate before it is shown or copied", target: nil, action: nil)
-        authenticate.state = .on
-        let stack = fieldStack([("Name", nameField), ("Secret", secretField), ("Authentication", authenticate)])
+        let options = SecretSettingsFields()
+        let stack = fieldStack([("Name", nameField), ("Secret", secretField), ("Authentication", options.checkbox),
+                                ("Reauthenticate after (seconds)", options.secondsField),
+                                ("Hide after (seconds)", options.hideField)])
 
         var information = "The secret is kept in your login keychain."
         while true {
@@ -309,7 +310,7 @@ enum Dialogs {
             }
             do {
                 try store.addSecret(name: nameField.stringValue, value: secretField.stringValue,
-                                    requiresAuthentication: authenticate.state == .on)
+                                    settings: try options.settings())
                 return
             } catch {
                 information = error.localizedDescription
@@ -339,9 +340,10 @@ enum Dialogs {
             rows.append(("Secret value", valueField))
         }
         rows.append(("Account name", nameField))
-        let authenticate = NSButton(checkboxWithTitle: "Ask to authenticate before it is shown or copied", target: nil, action: nil)
-        authenticate.state = .on
-        rows.append(("Authentication", authenticate))
+        let options = SecretSettingsFields()
+        rows.append(("Authentication", options.checkbox))
+        rows.append(("Reauthenticate after (seconds)", options.secondsField))
+        rows.append(("Hide after (seconds)", options.hideField))
         let stack = fieldStack(rows)
 
         var confirmed: SecretReference?
@@ -357,6 +359,7 @@ enum Dialogs {
             let reference = try picker.reference.validated()
             let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
             let accountName = typed.isEmpty ? "\(reference.name): \(reference.field)" : typed
+            let settings = try options.settings()
             try store.checkCanAdd(named: accountName)
             if writing {
                 let value = valueField.stringValue
@@ -388,7 +391,7 @@ enum Dialogs {
             // A failure to add the account is reported, and the secret is not written again.
             do {
                 try store.addVaultSecret(name: accountName, reference: reference, profile: session.profile.id,
-                                         requiresAuthentication: authenticate.state == .on)
+                                         settings: settings)
             } catch {
                 addFailure = error.localizedDescription
             }
@@ -716,5 +719,42 @@ private final class BusyAlert: NSObject {
         } else {
             NSApp.stopModal(withCode: .alertSecondButtonReturn)
         }
+    }
+}
+
+/// The fields of a secret's settings: whether it asks the user to authenticate, the seconds after an
+/// authentication during which it does not ask again, and the seconds after which it is hidden again; the
+/// authentication seconds apply only while it asks.
+@MainActor
+private final class SecretSettingsFields: NSObject {
+    let checkbox = NSButton(checkboxWithTitle: "Ask to authenticate before it is shown or copied", target: nil, action: nil)
+    let secondsField = NSTextField(string: "0")
+    let hideField = NSTextField(string: String(SecretSettings.defaultHideSeconds))
+
+    override init() {
+        super.init()
+        checkbox.state = .on
+        checkbox.target = self
+        checkbox.action = #selector(changed)
+        secondsField.placeholderString = "0 asks every time"
+        hideField.placeholderString = "0 never hides"
+    }
+
+    @objc private func changed() {
+        secondsField.isEnabled = checkbox.state == .on
+    }
+
+    /// The settings the fields hold; the numbers are whole numbers of 0 or more.
+    func settings() throws -> SecretSettings {
+        func number(_ field: NSTextField, _ name: String, empty: Int) throws -> Int {
+            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard let value = text.isEmpty ? empty : Int(text), value >= 0 else {
+                throw SessionError.invalidSetting(name)
+            }
+            return value
+        }
+        return SecretSettings(requiresAuthentication: checkbox.state == .on,
+                              authenticationSeconds: try number(secondsField, "Reauthenticate after", empty: 0),
+                              hideSeconds: try number(hideField, "Hide after", empty: SecretSettings.defaultHideSeconds))
     }
 }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 - 2026-11-26 10:01:03 +0100
+
+feat: a secret has a window that masks it until clicked and hides it again after a countdown, and
+it asks to authenticate again after a number of seconds, and after the computer wakes.
+
+- **Show** in the menu and **Show Window** in the details of a secret open a floating window that
+  shows the secret masked. A click reads it, after the authentication the secret asks for, and shows
+  it with a bar and the seconds left, in the size of the code window's font; then a timer masks it
+  again. The window has a Copy button. It is resizable and keeps the secret on one line: it opens
+  as wide as the secret needs, up to a maximum, a longer secret being shown in a smaller font, and
+  it cannot be made narrower than the smallest font needs; once the user resizes it, it keeps that
+  size until it is closed; hiding the secret again does not resize it. A secret of more than 64
+  characters is not shown in the window, which offers Copy only.
+- The Hide after setting, in seconds, is per secret, 30 by default; 0 never hides the secret and
+  shows a Hide button. It is set when the secret is added and changed in its details, and Reveal in
+  the details follows it.
+- A secret that asks to authenticate has a Reauthenticate after setting, in seconds, which is 0
+  by default: after the user authenticates, the secret is shown or copied without asking again until
+  that many seconds have passed. It is set when the secret is added and changed in its details.
+- The authentication is forgotten when the computer wakes, when the screens wake, and when the user
+  session switches out or in, so that the next secret asks again. Locking the screen while the
+  display stays on does not forget it.
+
 ## 0.7.4 - 2026-11-26 07:42:43 +0100
 
 fix: Test Connection and Vault Setup are in a group of their own below Save and Revert.
