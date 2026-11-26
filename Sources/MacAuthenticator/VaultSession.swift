@@ -72,35 +72,48 @@ final class VaultSession {
     /// Called once when a vault that worked fails, until it works again.
     @ObservationIgnored var onProblem: ((VaultSession, VaultProblem) -> Void)?
     @ObservationIgnored private var worked = false
-    @ObservationIgnored private(set) var token: VaultToken?
+    private(set) var token: VaultToken?
     @ObservationIgnored private var signInTask: Task<Void, Error>?
     @ObservationIgnored private var signInWindow: OIDCSignInWindow?
 
-    /// An OIDC profile takes up the token kept in the keychain, unless it has ended.
+    /// An OIDC profile takes up the token kept in the keychain; one that has ended is kept, and not
+    /// used, until a sign-in replaces it or Sign Out deletes it.
     init(profile: VaultProfile) {
         self.profile = profile
         guard profile.configuration.authMethod == .oidc, let kept = try? Keychain.vaultToken(of: profile.id) else {
             return
         }
-        if let expires = kept.expires, expires.timeIntervalSinceNow <= 5 {
-            keep(nil)
-        } else {
-            token = kept
-            status = .signedIn(until: kept.expires)
-        }
+        token = kept
+        showTokenStatus()
     }
 
     var configuration: VaultConfiguration {
         profile.configuration
     }
 
-    /// Takes the new name and settings of the profile, and signs out.
-    func update(_ profile: VaultProfile) {
-        self.profile = profile
-        signOut()
+    /// The status of a held token: signed in while it has not ended.
+    private func showTokenStatus() {
+        if let token, token.expires.map({ $0.timeIntervalSinceNow > 5 }) ?? true {
+            status = .signedIn(until: token.expires)
+        } else {
+            status = .signedOut
+        }
     }
 
-    /// Drops the token, and the one kept in the keychain, and closes a sign-in window that is open.
+    /// Takes the new name and settings of the profile. An OIDC token is not touched; the token of
+    /// another method is in memory alone, and is dropped, since the credential may have changed.
+    func update(_ profile: VaultProfile) {
+        signInWindow?.cancel()
+        self.profile = profile
+        worked = false
+        if profile.configuration.authMethod != .oidc {
+            token = nil
+        }
+        showTokenStatus()
+    }
+
+    /// Deletes the token, and the one kept in the keychain, and closes a sign-in window that is open.
+    /// A token is deleted by this alone, which the user chooses, and by the removal of the profile.
     func signOut() {
         signInWindow?.cancel()
         keep(nil)
@@ -238,20 +251,23 @@ final class VaultSession {
     }
 
     /// The token to use: the current one, renewed when half of its lease is gone, or a new
-    /// sign-in. An OIDC sign-in is never started here.
+    /// sign-in when it has ended. An OIDC sign-in is never started here, and a token that has ended
+    /// is kept, not used.
     private func validToken() async throws -> VaultToken {
-        if let current = token, let expires = current.expires {
+        var usable = token
+        if let current = usable, let expires = current.expires {
             let left = expires.timeIntervalSinceNow
             if left <= 5 {
-                keep(nil)
+                usable = nil
             } else if current.renewable, let lease = current.lease, left < lease / 2,
                       let renewed = try? await VaultClient(configuration: configuration, token: current.token).renewSelf() {
                 keep(renewed)
+                usable = renewed
                 status = .signedIn(until: renewed.expires)
             }
         }
-        if let token {
-            return token
+        if let usable {
+            return usable
         }
         guard configuration.authMethod != .oidc else {
             status = .signedOut
@@ -276,27 +292,22 @@ final class VaultSession {
         }
     }
 
-    /// A token Vault refuses is replaced once by a new sign-in, unless the token itself is the
-    /// credential or the sign-in is OIDC.
+    /// A password or AppRole login whose token Vault refuses is replaced once by a new login. A
+    /// refusal does not say that the token is bad, since a policy refuses too, so no token is
+    /// dropped because of it; a token is dropped by Sign Out alone.
     private func perform<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
         let first = try await validToken()
         do {
             return try await call(VaultClient(configuration: configuration, token: first.token))
         } catch let error as VaultError where error.isDenied {
-            keep(nil)
-            switch configuration.authMethod {
-            case .userpass, .approle:
-                try await signIn()
-                guard let second = token else {
-                    throw VaultError.notSignedIn
-                }
-                return try await call(VaultClient(configuration: configuration, token: second.token))
-            case .oidc:
-                status = .signedOut
-                throw VaultError.notSignedIn
-            case .token:
+            guard configuration.authMethod == .userpass || configuration.authMethod == .approle else {
                 throw error
             }
+            try await signIn()
+            guard let second = token else {
+                throw VaultError.notSignedIn
+            }
+            return try await call(VaultClient(configuration: configuration, token: second.token))
         }
     }
 }

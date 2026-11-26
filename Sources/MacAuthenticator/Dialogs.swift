@@ -420,6 +420,32 @@ enum Dialogs {
         }
     }
 
+    /// Warns that the address or the namespace of a vault changed, and asks whether the token of its
+    /// sign-in is kept: true to keep it, false to delete it, nil to cancel the change.
+    static func askToKeepToken(of session: VaultSession, newConfiguration: VaultConfiguration) -> Bool? {
+        func server(_ configuration: VaultConfiguration) -> String {
+            let namespace = configuration.namespace.map { ", namespace \($0)" } ?? ""
+            return "\(configuration.address)\(namespace)"
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "The address or the namespace of \(session.profile.name) changed"
+        alert.informativeText = "The token of the sign-in was obtained from \(server(session.configuration)). "
+            + "Keep it for \(server(newConfiguration)), or delete it?"
+        alert.addButton(withTitle: "Keep Token")
+        alert.addButton(withTitle: "Delete Token")
+        alert.addButton(withTitle: "Cancel")
+        activate()
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return true
+        case .alertSecondButtonReturn:
+            return false
+        default:
+            return nil
+        }
+    }
+
     /// Asks before deleting the vault, its credential and its accounts.
     static func removeVaultProfile(_ session: VaultSession, from store: AccountStore) {
         let count = store.accounts(of: session.profile.id).count

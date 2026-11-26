@@ -229,7 +229,8 @@ The Vaults tab of the Settings window asks for:
 - the name of the vault, which must be unique;
 - the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for any
   address, and then the credential and the codes cross the network unencrypted;
-- the namespace, for Vault Enterprise;
+- the namespace, for Vault Enterprise; changing the address or the namespace of a saved OIDC vault
+  that holds a token warns, and asks whether to keep the token, delete it or cancel the change;
 - the mount of the TOTP engine, `totp` by default;
 - the authentication method and its mount, which is named after the method by default:
   - **Token**: the token is kept in the keychain;
@@ -243,7 +244,9 @@ The Vaults tab of the Settings window asks for:
     listens on the port and no page is loaded from it. The provider's cookies are kept in the
     app's own store, apart from Safari's, so a later sign-in is often one click. The Vault token
     is kept in the keychain, in an item of its own, so the sign-in is repeated only when the token
-    ends or is refused. Sign Out deletes the token item.
+    has ended. The token is deleted by **Sign Out** alone, which the user chooses, and by removing
+    the vault; an error, a refusal by Vault, the end of the token and a change of the vault's
+    settings delete nothing. A token that has ended is not used, and Sign In replaces it.
 
 An empty credential field keeps the credential stored before. A profile is one generic password
 item of the service `pl.waw.koszewscy.MacAuthenticator.vault`, labelled with the profile name:
@@ -288,9 +291,9 @@ A failure is said in words: what is wrong, what happened, and what to do about i
   the address, whether the server answers and is unsealed, the authentication, and the TOTP
   engine. The authentication step is named after what it does: **Token** checks that the token is
   valid and says when it ends, **Login** logs in with a password or an AppRole and says that Vault
-  issued a token. An OIDC vault that is signed in, at the address of the page, has its token
-  checked as **Token** and used for the engine step; a signed out one has **Authentication**
-  skipped, since it signs in interactively, and so the engine step is skipped too. Each step shows passed, warning, failed
+  issued a token. An OIDC vault that is signed in has its token checked as **Token** and used for
+  the engine step; a signed out one has **Authentication** skipped, since it signs in
+  interactively, and so the engine step is skipped too. Each step shows passed, warning, failed
   or skipped, and the first failure says what to do.
 - When a vault that worked fails, a macOS notification names it; clicking it opens Settings on
   the vault. A vault that keeps failing notifies once, until it works again. The permission is

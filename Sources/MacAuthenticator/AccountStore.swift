@@ -263,9 +263,10 @@ final class AccountStore {
     }
 
     /// Replaces the profile's name and settings, and its credential when one is given; an OIDC
-    /// profile's credential is deleted. The session signs out.
+    /// profile's credential is deleted. The token of an OIDC sign-in is kept, unless the user chose to
+    /// delete it.
     func updateVaultProfile(_ session: VaultSession, name: String, configuration: VaultConfiguration,
-                            credential: String?) throws {
+                            credential: String?, deleteToken: Bool = false) throws {
         guard loadError == nil else {
             throw StoreError.notLoaded
         }
@@ -273,6 +274,9 @@ final class AccountStore {
         let profile = VaultProfile(id: session.profile.id, name: name, configuration: configuration)
         try Keychain.updateVaultProfile(profile, credential: configuration.authMethod == .oidc ? "" : credential)
         session.update(profile)
+        if deleteToken {
+            session.signOut()
+        }
         vaultConnectionChanged()
         reload()
     }

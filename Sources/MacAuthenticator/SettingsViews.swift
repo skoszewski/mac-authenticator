@@ -507,8 +507,19 @@ private struct VaultProfileEditor: View {
             let credential = draft.credential
             let profile: VaultSession
             if let session {
+                // A change of the address or the namespace asks whether the token of the sign-in is kept.
+                var deleteToken = false
+                if session.configuration.authMethod == .oidc, session.token != nil,
+                   configuration.address != session.configuration.address
+                    || configuration.namespace != session.configuration.namespace {
+                    guard let keep = Dialogs.askToKeepToken(of: session, newConfiguration: configuration) else {
+                        return
+                    }
+                    deleteToken = !keep
+                }
                 try store.updateVaultProfile(session, name: name, configuration: configuration,
-                                             credential: credential.isEmpty ? nil : credential)
+                                             credential: credential.isEmpty ? nil : credential,
+                                             deleteToken: deleteToken)
                 profile = session
             } else {
                 profile = try store.addVaultProfile(name: name, configuration: configuration, credential: credential)
@@ -536,12 +547,8 @@ private struct VaultProfileEditor: View {
                 let configuration = try draft.configuration()
                 let credential = draft.credential.isEmpty
                     ? try session.flatMap { try Keychain.vaultCredential(of: $0.profile.id) } : draft.credential
-                // The token of the vault's sign-in goes to the address of the vault alone.
-                let sameServer = session.map {
-                    $0.configuration.address == configuration.address && $0.configuration.namespace == configuration.namespace
-                } ?? false
                 checks = await VaultDiagnostics.run(configuration: configuration, credential: credential,
-                                                    signedInToken: sameServer ? session?.token : nil)
+                                                    signedInToken: session?.token)
             } catch {
                 checks = [VaultCheck(step: "Settings", outcome: .failed, message: "The settings cannot be tested.",
                                      problem: VaultProblem(error))]
@@ -615,7 +622,7 @@ private struct VaultProfileEditor: View {
                         Button(session.configuration.authMethod.stopLabel) {
                             store.signOutOfVault(session)
                         }
-                        .disabled(session.status == .signedOut)
+                        .disabled(session.status == .signedOut && session.token == nil)
                     }
                 }
                 HStack {

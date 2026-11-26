@@ -211,10 +211,20 @@ The identity provider signs the user in, so the app stores no credential for OID
 resulting Vault token in the keychain, in an item of its own per profile, in a service apart from
 the profiles: a profile's credential item is a token, a password or a SecretID by the method, and
 a token of a sign-in must never be taken for one when the method is changed. The session takes the
-kept token up when it is made, unless it has ended, so a sign-in is repeated only when the token
-ends or Vault refuses it, not after each launch. Sign Out, a change of the profile, a token
-that ended or was refused, and the profile's removal delete the item. A keychain that refuses to
-keep the token is logged, and the token works in memory. The tokens of the other methods are
+kept token up when it is made, so a sign-in is repeated only when the token has ended, not after
+each launch.
+
+Nothing drops the token but the user: Sign Out and the removal of the profile delete the item. An
+error never does, and neither does a change of the profile. A change of the address or the
+namespace of a profile that holds a token asks the user whether to keep the token, delete it, or
+cancel the change, since only the user knows whether the new address is the same vault moved or
+another one; the app does not decide it. Vault answers a policy that lacks a path and a token it
+does not accept with the same 403, so a refusal says nothing about the token, and dropping it
+would sign the user out of every account of the vault, and delete a token that is good, for one
+call a policy refuses. A refusal is reported as the problem it is. A token that has ended is kept
+in the item and in memory, and not used, until a sign-in replaces it or Sign Out deletes it, so
+that Sign Out can always be chosen. A keychain that refuses to keep the token is logged, and the
+token works in memory. The tokens of the other methods are
 not kept, since those methods log in again by themselves. The sign-in window is opened from Sign
 In only, never because a code was needed, so a window opening in the background cannot start a
 login nobody expects.

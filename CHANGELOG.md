@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.1 - 2026-11-26 06:26:57 +0100
+
+fix: only Sign Out or removing the vault deletes the token of an OIDC sign-in, not an error or a
+change of the settings, and changing a vault's address or namespace asks about its token.
+
+- A call that Vault refuses with 403, which a policy can cause as well as a bad token, no longer
+  signs the vault out and deletes its token: the vault shows the refusal as its problem, and the
+  token stays for the next call.
+- A token that has ended is kept, and not used, until Sign In replaces it or Sign Out deletes it;
+  Sign Out can be chosen while a token is held, whatever the status says.
+- Saving the vault's settings deletes no OIDC token.
+- Test Connection of a signed in OIDC vault uses the token of the sign-in for the address and
+  namespace in the form, as typed.
+- Changing the address or the namespace of a saved OIDC vault that holds a token warns and asks
+  whether to keep the token, delete it, or cancel the change.
+
 ## 0.7.0 - 2026-11-25 20:49:03 +0100
 
 feat: secret accounts, plain strings kept in the keychain or in a field of a Vault KV secret, next
