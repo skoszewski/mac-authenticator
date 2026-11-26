@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.2 - 2026-11-26 07:10:53 +0100
+
+fix: a secret can ask the user to authenticate before it is shown or copied, Vault accounts are not
+lost to unreadable records, and the writes of a secret are checked first.
+
+- Reveal and Copy Secret ask the user to authenticate with Touch ID, an Apple Watch or the
+  password when the secret's setting asks for it; the setting is per secret, on by default, chosen
+  when the secret is added and changed in its details; cancelling does nothing. A revealed secret
+  is hidden when the Settings window loses the keyboard or closes, and a copied secret is also
+  cleared from the clipboard when the app quits.
+- Stored Vault account records that cannot be read are reported and left as they are, not replaced
+  by an empty list by the next change; an account whose record has no KV reference says so.
+- Secret in Vault refuses a taken account name before it writes, asks before it replaces a field
+  that holds a value, and checks a KV v1 write by reading the field back. Generate in Vault and
+  Import to Vault also refuse a taken name before they change the vault.
+- A mount or secret name with an empty name between slashes, a name of dots or a control character
+  is refused, and the characters of a name are escaped in the request.
+- A KV v2 secret whose latest version is deleted is reported as deleted. A failure to list the
+  secrets of a mount is said in the secret name box.
+- A yellow warning triangle beside the address of a vault, with its description on hover, says that
+  the address uses plain HTTP.
+
 ## 0.7.1 - 2026-11-26 06:26:57 +0100
 
 fix: only Sign Out or removing the vault deletes the token of an OIDC sign-in, not an error or a

@@ -52,6 +52,8 @@ public enum VaultError: LocalizedError, Equatable {
     case unsupportedKey(String)
     case noSecret(String)
     case missingField(field: String, secret: String)
+    case secretDeleted(String)
+    case writeLost(String)
 
     public var errorDescription: String? {
         switch self {
@@ -74,6 +76,10 @@ public enum VaultError: LocalizedError, Equatable {
             return "Vault holds no secret named \(name)."
         case let .missingField(field, secret):
             return "The secret \(secret) has no field named \(field)."
+        case let .secretDeleted(name):
+            return "The latest version of the secret \(name) is deleted."
+        case let .writeLost(name):
+            return "The secret \(name) was changed by another writer while the field was written."
         }
     }
 
@@ -189,17 +195,26 @@ public struct VaultClient: Sendable {
     func send(_ method: String, _ path: String, query: [URLQueryItem] = [],
               body: [String: any Sendable]? = nil, rawBody: Data? = nil,
               contentType: String = "application/json") async throws -> Data {
+        try await exchange(method, path, query: query, body: body, rawBody: rawBody, contentType: contentType).data
+    }
+
+    /// Sends the request and returns the body and the status of the answer; an answer that is
+    /// neither successful nor of a status in `allowing` is an error carrying Vault's messages.
+    func exchange(_ method: String, _ path: String, query: [URLQueryItem] = [],
+                  body: [String: any Sendable]? = nil, rawBody: Data? = nil,
+                  contentType: String = "application/json",
+                  allowing: Set<Int> = []) async throws -> (data: Data, status: Int) {
         let request = try makeRequest(method, path, query: query, body: body, rawBody: rawBody, contentType: contentType)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw VaultError.badResponse("not an HTTP answer")
         }
-        guard (200 ..< 300).contains(http.statusCode) else {
+        guard (200 ..< 300).contains(http.statusCode) || allowing.contains(http.statusCode) else {
             struct Errors: Decodable { let errors: [String]? }
             let messages = (try? JSONDecoder().decode(Errors.self, from: data))?.errors ?? []
             throw VaultError.http(status: http.statusCode, messages: messages)
         }
-        return data
+        return (data, http.statusCode)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -232,11 +247,11 @@ public struct VaultClient: Sendable {
     }
 
     private func authPath(_ suffix: String) -> String {
-        "auth/\(Self.trimmed(configuration.authMount))/\(suffix)"
+        "auth/\(VaultPath.escaped(configuration.authMount))/\(suffix)"
     }
 
     private func keysPath(_ suffix: String = "") -> String {
-        "\(Self.trimmed(configuration.totpMount))/\(suffix)"
+        "\(VaultPath.escaped(configuration.totpMount))/\(suffix)"
     }
 
     public func loginUserpass(username: String, password: String) async throws -> VaultToken {
@@ -393,6 +408,48 @@ public struct VaultClient: Sendable {
     }
 }
 
+/// The paths a user types, a mount or a secret's name: slash-separated names, each of which is
+/// escaped for the URL.
+public enum VaultPath {
+    /// Why the path cannot be used, or nil: an empty name, a name of dots, or a control character.
+    public static func problem(_ path: String) -> String? {
+        let names = VaultClient.trimmed(path).split(separator: "/", omittingEmptySubsequences: false)
+        if names.isEmpty || names.contains(where: \.isEmpty) {
+            return "it is empty or holds an empty name between slashes"
+        }
+        if names.contains(where: { $0 == "." || $0 == ".." }) {
+            return "it holds a name of dots"
+        }
+        if path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+            return "it holds a control character"
+        }
+        return nil
+    }
+
+    /// The path with each name percent-encoded, the slashes between them kept.
+    public static func escaped(_ path: String) -> String {
+        VaultClient.trimmed(path).split(separator: "/", omittingEmptySubsequences: false).map {
+            String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
+        }.joined(separator: "/")
+    }
+}
+
+/// A setting a user typed that cannot be used, and why.
+public struct InvalidValue: Error, VaultProblemConvertible {
+    public let what: String
+    public let reason: String
+
+    public init(what: String, reason: String) {
+        self.what = what
+        self.reason = reason
+    }
+
+    public var vaultProblem: VaultProblem {
+        VaultProblem(kind: .credential, title: "\(what) is not valid", detail: "\(what) cannot be used: \(reason).",
+                     suggestion: "Use names separated by single slashes, with no empty name or name of dots.")
+    }
+}
+
 /// The version of a KV secrets engine.
 public enum KVVersion: Int, Codable, CaseIterable, Sendable {
     case v1 = 1
@@ -422,6 +479,9 @@ public struct SecretReference: Codable, Equatable, Sendable {
             guard !trimmed.isEmpty else {
                 throw EmptyValue(what: what)
             }
+            if let reason = VaultPath.problem(trimmed) {
+                throw InvalidValue(what: what, reason: reason)
+            }
             return trimmed
         }
         let field = field.trimmingCharacters(in: .whitespaces)
@@ -436,21 +496,25 @@ public struct SecretReference: Codable, Equatable, Sendable {
 extension VaultClient {
     /// The path of a secret's data: the KV v2 engine keeps it below `data/`.
     private func dataPath(_ reference: SecretReference) -> String {
-        let mount = Self.trimmed(reference.mount)
-        let name = Self.escaped(Self.trimmed(reference.name))
+        let mount = VaultPath.escaped(reference.mount)
+        let name = VaultPath.escaped(reference.name)
         return reference.version == .v2 ? "\(mount)/data/\(name)" : "\(mount)/\(name)"
     }
 
-    /// The fields of the secret as Vault holds them; nil when the secret does not exist.
+    /// The fields of the secret as Vault holds them; nil when the secret does not exist. A KV v2
+    /// secret whose latest version is deleted or destroyed is an error, not an absent secret.
     private func secretFields(_ reference: SecretReference) async throws -> [String: Any]? {
-        let data: Data
-        do {
-            data = try await send("GET", dataPath(reference))
-        } catch VaultError.http(let status, _) where status == 404 {
+        let (data, status) = try await exchange("GET", dataPath(reference), allowing: [404])
+        let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if status == 404 {
+            let metadata = (reply?["data"] as? [String: Any])?["metadata"] as? [String: Any]
+            if reference.version == .v2, metadata?["destroyed"] as? Bool == true
+                || !((metadata?["deletion_time"] as? String) ?? "").isEmpty {
+                throw VaultError.secretDeleted(reference.name)
+            }
             return nil
         }
-        guard let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              var fields = reply["data"] as? [String: Any] else {
+        guard var fields = reply?["data"] as? [String: Any] else {
             throw VaultError.badResponse("secret")
         }
         if reference.version == .v2 {
@@ -460,6 +524,18 @@ extension VaultClient {
             fields = inner
         }
         return fields
+    }
+
+    /// Whether the secret holds the field; a secret that does not exist does not.
+    public func secretFieldExists(_ reference: SecretReference) async throws -> Bool {
+        do {
+            _ = try await readSecret(reference)
+            return true
+        } catch VaultError.noSecret(_) {
+            return false
+        } catch VaultError.missingField(_, _) {
+            return false
+        }
     }
 
     /// The text of the secret's field.
@@ -489,9 +565,17 @@ extension VaultClient {
                 _ = try await send("POST", path, body: ["options": ["cas": 0], "data": [reference.field: value]])
             }
         case .v1:
-            var fields = try await secretFields(reference) ?? [:]
-            fields[reference.field] = value
-            _ = try await send("POST", path, rawBody: try JSONSerialization.data(withJSONObject: fields))
+            // KV v1 has no compare-and-set, so the field is read back, and written again when another
+            // writer's write replaced the secret and dropped it.
+            for _ in 1 ... 3 {
+                var fields = try await secretFields(reference) ?? [:]
+                fields[reference.field] = value
+                _ = try await send("POST", path, rawBody: try JSONSerialization.data(withJSONObject: fields))
+                if (try await secretFields(reference))?[reference.field] as? String == value {
+                    return
+                }
+            }
+            throw VaultError.writeLost(reference.name)
         }
     }
 
@@ -501,7 +585,7 @@ extension VaultClient {
             struct Payload: Decodable { let keys: [String] }
             let data: Payload
         }
-        let mount = Self.trimmed(mount)
+        let mount = VaultPath.escaped(mount)
         do {
             let data = try await send("LIST", version == .v2 ? "\(mount)/metadata" : mount)
             return try decode(Reply.self, from: data).data.keys.filter { !$0.hasSuffix("/") }

@@ -343,6 +343,48 @@ struct VaultAgainstDevServerTests {
         #expect(try await vault.listSecrets(mount: "nowhere", version: version).isEmpty)
     }
 
+    @Test(arguments: [KVVersion.v1, .v2])
+    func theExistenceOfAFieldIsToldWithoutAnErrorForAnAbsentSecretOrField(version: KVVersion) async throws {
+        let vault = client(try server(), token: try server().rootToken)
+        #expect(try await vault.secretFieldExists(reference(version)))
+        #expect(try await !vault.secretFieldExists(reference(version, field: "absent")))
+        #expect(try await !vault.secretFieldExists(reference(version, name: "absent")))
+    }
+
+    @Test func aDeletedKVv2SecretIsToldApartFromAnAbsentOne() async throws {
+        let server = try server()
+        try await server.admin("POST", "kv2/data/gone", ["data": ["password": "x"]])
+        try await server.admin("POST", "kv2/delete/gone", ["versions": [1]])
+        let vault = client(server, token: server.rootToken)
+        await #expect(throws: VaultError.secretDeleted("gone")) {
+            try await vault.readSecret(reference(.v2, name: "gone"))
+        }
+        await #expect(throws: VaultError.noSecret("never")) {
+            try await vault.readSecret(reference(.v2, name: "never"))
+        }
+    }
+
+    @Test func aMountOrNameIsEscapedInTheRequestPath() throws {
+        let vault = client(try server(), token: "t", mount: "a b/c?d")
+        let request = try vault.makeRequest("GET", "\(VaultPath.escaped("a b/c?d"))/keys")
+        #expect(request.url?.path == "/v1/a b/c?d/keys")
+        #expect(request.url?.query == nil)
+        #expect(VaultPath.escaped("/a b/c?d/") == "a%20b/c%3Fd")
+    }
+
+    @Test(arguments: ["", "a//b", "..", "a/../b", "./a", "a/\u{0007}"])
+    func aPathWithAnEmptyNameADotNameOrAControlCharacterIsRefused(path: String) {
+        #expect(VaultPath.problem(path) != nil)
+        #expect(throws: (any Error).self) {
+            try SecretReference(version: .v2, mount: path, name: "app", field: "f").validated()
+        }
+    }
+
+    @Test(arguments: ["secret", "team/kv", "a b/c"])
+    func aPathOfNamesIsAccepted(path: String) {
+        #expect(VaultPath.problem(path) == nil)
+    }
+
     @Test func aSecretReferenceIsTrimmedAndRefusedWhenAPartIsEmpty() throws {
         let trimmed = try SecretReference(version: .v2, mount: " /kv2/ ", name: "app/", field: " password ").validated()
         #expect(trimmed == SecretReference(version: .v2, mount: "kv2", name: "app", field: "password"))

@@ -321,3 +321,35 @@ A copied secret carries `org.nspasteboard.ConcealedType`, which clipboard manage
 recording it, and the clipboard is emptied after 30 seconds if its change count is still that of
 the copy, so a later copy of the user's is not lost. A TOTP code expires on its own and is copied
 as plain text.
+
+## A secret is shown or copied after the user authenticates, when its setting asks for it
+
+Reveal and Copy Secret run `LAContext` with the policy `deviceOwnerAuthentication`, which takes Touch
+ID, an Apple Watch or the user's password, so a person at an unlocked Mac cannot read a secret that
+the app holds in the keychain or fetches from Vault. Whether a secret asks is the account's own
+setting, since a password that guards little is a nuisance to authenticate for on every copy and a
+key that guards much is not: it is kept in the generic attribute of a keychain secret
+(`authenticate=0` or `authenticate=1`) and in the record of a Vault secret, and a secret without it
+asks, as every secret did before the setting existed. A cancelled prompt does nothing and shows no
+error. A revealed secret is hidden when the Settings window loses the keyboard or closes, since the
+window is kept hidden and its state would show the secret again, and the clipboard copy of a secret
+is emptied when the app quits as well as after 30 seconds. The revealed value lives in the router
+of the Settings window, not in the view, so the window can hide it.
+
+## The stored Vault records are never saved over when they cannot be read
+
+The records of the accounts kept in Vault are read when the accounts are loaded, and records that do
+not decode are a load error, not an empty list: the accounts are not changed and the error says why,
+since the next save of an empty list would delete every Vault account. A secret record that has no
+reference is listed with the problem, and is not read from the keychain by mistake.
+
+## KV v1 writes are verified, and a Vault secret is written only after the checks
+
+KV v1 has no compare-and-set or merge, so a field is written by reading the secret, setting the field
+and writing it back; the secret is read again, and the write is repeated up to three times if the
+field is gone, which another writer's replacement of the secret causes. It does not catch a writer
+whose write lands between the read and the write and drops no field of ours, which no check can.
+The checks that need no write are made first: the account name is free, and the field is told to
+hold a value or not, which the user is asked about, so that a refusal does not leave a secret changed
+in Vault and no account for it. A mount and a secret's name are names separated by single slashes,
+each escaped for the URL, with no empty name and no name of dots, which would reach another path.

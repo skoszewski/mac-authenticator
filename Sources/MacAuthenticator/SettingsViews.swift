@@ -151,7 +151,6 @@ private struct AccountDetails: View {
     let router: SettingsRouter
     let account: Account
     let source: String
-    @State private var revealed: String?
 
     var body: some View {
         Form {
@@ -188,6 +187,17 @@ private struct AccountDetails: View {
             }
             if account.kind == .secret {
                 Section("Secret") {
+                    Toggle("Ask to authenticate before it is shown or copied", isOn: Binding(
+                        get: { account.requiresAuthentication },
+                        set: { required in
+                            do {
+                                try store.setRequiresAuthentication(account, required)
+                            } catch {
+                                Dialogs.showProblem("The setting was not changed", error)
+                            }
+                        }
+                    ))
+                    let revealed = router.revealedID == account.id ? router.revealed : nil
                     if let revealed {
                         Text(revealed)
                             .font(.system(.body, design: .monospaced))
@@ -196,12 +206,15 @@ private struct AccountDetails: View {
                     HStack {
                         Button(revealed == nil ? "Reveal" : "Hide") {
                             guard revealed == nil else {
-                                revealed = nil
+                                router.hideSecret()
                                 return
                             }
                             Task {
                                 do {
-                                    revealed = try await store.revealSecret(of: account)
+                                    if let value = try await store.revealSecret(of: account) {
+                                        router.revealed = value
+                                        router.revealedID = account.id
+                                    }
                                 } catch {
                                     Dialogs.showProblem("The secret was not read", error)
                                 }
@@ -465,6 +478,12 @@ struct VaultProfileDraft: Equatable {
         guard let address = text(address) else {
             throw SessionError.missingSetting("Vault address")
         }
+        if let mount = text(totpMount), let reason = VaultPath.problem(mount) {
+            throw InvalidValue(what: "The TOTP engine mount", reason: reason)
+        }
+        if method != .token, let mount = text(authMount), let reason = VaultPath.problem(mount) {
+            throw InvalidValue(what: "The authentication mount", reason: reason)
+        }
         guard let port = Int(oidcPort), (1 ... 65535).contains(port) else {
             throw SessionError.invalidSetting("Redirect URI port")
         }
@@ -490,6 +509,7 @@ private struct VaultProfileEditor: View {
     @State private var message: String?
     @State private var checks: [VaultCheck] = []
     @State private var testing = false
+    @State private var plainHTTP = false
     @State private var showSetup = false
 
     init(store: AccountStore, session: VaultSession?, saved: @escaping (UUID) -> Void) {
@@ -561,7 +581,27 @@ private struct VaultProfileEditor: View {
         Form {
             Section("Vault") {
                 TextField("Name", text: $draft.name, prompt: Text("For example Work or Lab"))
-                TextField("Vault address", text: $draft.address, prompt: Text("https://vault.example.com:8200"))
+                HStack {
+                    TextField("Vault address", text: $draft.address, prompt: Text("https://vault.example.com:8200"))
+                    if plainHTTP {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                            .help("The address uses plain HTTP: the credential, the token, the codes and the secrets cross the network unencrypted.")
+                    }
+                }
+                .task(id: draft.address) {
+                    // An address of this Mac is not warned about; the others are, once typing pauses.
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    let components = URLComponents(string: draft.address.trimmingCharacters(in: .whitespaces))
+                    if components?.scheme?.lowercased() == "http", let host = components?.host, !host.isEmpty {
+                        plainHTTP = await !VaultDiagnostics.resolvesToLoopback(host)
+                    } else {
+                        plainHTTP = false
+                    }
+                }
                 TextField("Namespace", text: $draft.namespace, prompt: Text("Optional, Vault Enterprise"))
                 TextField("TOTP engine mount", text: $draft.totpMount)
             }

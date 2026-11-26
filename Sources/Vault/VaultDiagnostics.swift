@@ -145,7 +145,7 @@ public enum VaultDiagnostics {
     }
 
     /// Whether the host name resolves to loopback addresses alone; false when it does not resolve.
-    static func resolvesToLoopback(_ host: String) async -> Bool {
+    public static func resolvesToLoopback(_ host: String) async -> Bool {
         await Task.detached {
             var hints = addrinfo()
             hints.ai_family = AF_UNSPEC

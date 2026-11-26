@@ -1,4 +1,5 @@
 import AppKit
+import LocalAuthentication
 import Observation
 import ServiceManagement
 import TOTP
@@ -11,6 +12,8 @@ enum StoreError: LocalizedError {
     case missingProfileName
     case profileRemoved
     case notLoaded
+    case referenceMissing
+    case recordsUnreadable(String)
     case missingName
     case emptySecret
 
@@ -29,7 +32,11 @@ enum StoreError: LocalizedError {
         case .profileRemoved:
             return "The vault of this account was removed."
         case .notLoaded:
-            return "The accounts were not read from the keychain, so they are not changed."
+            return "The accounts were not read completely, so they are not changed."
+        case let .recordsUnreadable(reason):
+            return "The stored records of the Vault accounts could not be read, and are left as they are: \(reason)"
+        case .referenceMissing:
+            return "The record of this account holds no reference to a secret."
         }
     }
 }
@@ -58,6 +65,8 @@ private struct VaultRecord: Codable {
     var parameters: String
     var key: String
     var reference: SecretReference?
+    /// Whether the secret account asks the user to authenticate; absent means it does.
+    var authenticate: Bool?
     var added: Date
 }
 
@@ -91,8 +100,9 @@ final class AccountStore {
     /// The Vault profile and KV field of each secret account kept in Vault.
     private(set) var vaultSecrets: [UUID: VaultSecret] = [:]
     private var vaultCodes: [UUID: VaultCode] = [:]
-    @ObservationIgnored private var vaultRecords: [VaultRecord] = UserDefaults.standard.data(forKey: "vaultProfileAccounts")
-        .flatMap { try? JSONDecoder().decode([VaultRecord].self, from: $0) } ?? []
+    @ObservationIgnored private var vaultRecords: [VaultRecord] = []
+    /// The accounts of records that name no KV reference although they are secret accounts.
+    @ObservationIgnored private var brokenRecords: Set<UUID> = []
     /// The accounts being fetched, and the period count of the last failed fetch of each.
     @ObservationIgnored private var vaultFetching: Set<UUID> = []
     @ObservationIgnored private var vaultFailures: [UUID: Int] = [:]
@@ -117,6 +127,9 @@ final class AccountStore {
     /// The secrets of the accounts whose codes are shown, and of no other.
     @ObservationIgnored private var secrets: [UUID: String] = [:]
     @ObservationIgnored private var timer: Timer?
+    /// The change count of the clipboard right after a secret was copied to it.
+    @ObservationIgnored private var copiedSecret: Int?
+    @ObservationIgnored private var quitObserver: NSObjectProtocol?
 
     var menuBarAccount: Account? {
         accounts.first { $0.id == menuBarAccountID }
@@ -136,6 +149,13 @@ final class AccountStore {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        quitObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.clearCopiedSecret()
+            }
+        }
     }
 
     /// Lists the Vault profiles and the accounts from the keychain again, in the stored menu order;
@@ -143,6 +163,8 @@ final class AccountStore {
     /// profile that is still there is kept, with its token.
     func reload() {
         do {
+            vaultRecords = try Self.readVaultRecords()
+            brokenRecords = Set(vaultRecords.filter { $0.kind == .secret && $0.reference == nil }.map(\.id))
             vaults = try Keychain.vaultProfiles().map { profile in
                 let session = vaults.first(where: { $0.profile.id == profile.id }) ?? VaultSession(profile: profile)
                 if session.profile != profile {
@@ -156,7 +178,7 @@ final class AccountStore {
             let order = UserDefaults.standard.stringArray(forKey: "accountOrder") ?? []
             let vaultListed = vaultRecords.compactMap { record in
                 let account = record.kind == .secret
-                    ? Account(secretID: record.id, name: record.name)
+                    ? Account(secretID: record.id, name: record.name, requiresAuthentication: record.authenticate ?? true)
                     : try? Account(id: record.id, name: record.name, issuer: record.issuer, parameters: record.parameters)
                 return account.map { Keychain.Listed(account: $0, created: record.added) }
             }
@@ -193,7 +215,8 @@ final class AccountStore {
     func addVaultAccount(_ account: Account, key: String, profile: UUID) throws {
         try checkCanAdd(named: account.name)
         vaultRecords.append(VaultRecord(id: account.id, kind: nil, profile: profile, name: account.name, issuer: account.issuer,
-                                        parameters: account.parameters, key: key, reference: nil, added: Date()))
+                                        parameters: account.parameters, key: key, reference: nil, authenticate: nil,
+                                        added: Date()))
         saveVaultRecords()
         vaultKeys[account.id] = VaultKey(profile: profile, key: key)
         accounts.append(account)
@@ -201,7 +224,7 @@ final class AccountStore {
     }
 
     /// Adds a secret account whose secret is kept in the keychain.
-    func addSecret(name: String, value: String) throws {
+    func addSecret(name: String, value: String, requiresAuthentication: Bool) throws {
         let name = name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {
             throw StoreError.missingName
@@ -210,23 +233,24 @@ final class AccountStore {
             throw StoreError.emptySecret
         }
         try checkCanAdd(named: name)
-        let account = Account(secretID: UUID(), name: name)
-        try Keychain.addSecret(id: account.id, name: name, value: value)
+        let account = Account(secretID: UUID(), name: name, requiresAuthentication: requiresAuthentication)
+        try Keychain.addSecret(id: account.id, name: name, value: value, requiresAuthentication: requiresAuthentication)
         accounts.append(account)
         saveOrder()
     }
 
     /// Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret
     /// is kept for it.
-    func addVaultSecret(name: String, reference: SecretReference, profile: UUID) throws {
+    func addVaultSecret(name: String, reference: SecretReference, profile: UUID, requiresAuthentication: Bool) throws {
         let name = name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {
             throw StoreError.missingName
         }
         try checkCanAdd(named: name)
-        let account = Account(secretID: UUID(), name: name)
+        let account = Account(secretID: UUID(), name: name, requiresAuthentication: requiresAuthentication)
         vaultRecords.append(VaultRecord(id: account.id, kind: .secret, profile: profile, name: name, issuer: nil,
-                                        parameters: "", key: "", reference: reference, added: Date()))
+                                        parameters: "", key: "", reference: reference,
+                                        authenticate: requiresAuthentication, added: Date()))
         saveVaultRecords()
         vaultSecrets[account.id] = VaultSecret(profile: profile, reference: reference)
         accounts.append(account)
@@ -309,7 +333,7 @@ final class AccountStore {
     }
 
     /// Refuses a change while the keychain is not listed, and a name an account has already.
-    private func checkCanAdd(named name: String) throws {
+    func checkCanAdd(named name: String) throws {
         guard loadError == nil else {
             throw StoreError.notLoaded
         }
@@ -378,6 +402,9 @@ final class AccountStore {
 
     /// The text of a secret account: read from its keychain item, or from its field in Vault.
     private func secretValue(of account: Account) async throws -> String {
+        guard !brokenRecords.contains(account.id) else {
+            throw StoreError.referenceMissing
+        }
         guard let vaultSecret = vaultSecrets[account.id] else {
             return try Keychain.secretValue(of: account.id)
         }
@@ -388,26 +415,68 @@ final class AccountStore {
         return try await session.authorized { try await $0.readSecret(reference) }
     }
 
-    /// The text of a secret account, for the user to look at; nothing is kept of it.
-    func revealSecret(of account: Account) async throws -> String {
-        try await secretValue(of: account)
+    /// Sets whether showing or copying a secret account's secret asks the user to authenticate.
+    func setRequiresAuthentication(_ account: Account, _ required: Bool) throws {
+        guard loadError == nil else {
+            throw StoreError.notLoaded
+        }
+        if let index = vaultRecords.firstIndex(where: { $0.id == account.id }) {
+            vaultRecords[index].authenticate = required
+            saveVaultRecords()
+        } else {
+            try Keychain.setSecretAuthentication(account.id, required: required)
+        }
+        if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[index].requiresAuthentication = required
+        }
     }
 
-    /// Puts the text of a secret account in the clipboard, marked concealed, and empties the
-    /// clipboard after 30 seconds if it still holds that copy.
+    /// Asks the user to authenticate, with Touch ID, Apple Watch or the password, before a secret is
+    /// shown or copied; false when the user cancels, an error otherwise.
+    private func authenticated(for reason: String) async throws -> Bool {
+        do {
+            return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+        } catch let error as LAError where [.userCancel, .appCancel, .systemCancel].contains(error.code) {
+            return false
+        }
+    }
+
+    /// The text of a secret account, for the user to look at, after the user authenticates when the
+    /// account asks for it; nil when the user cancels. Nothing is kept of it.
+    func revealSecret(of account: Account) async throws -> String? {
+        if account.requiresAuthentication, try await !authenticated(for: "show the secret \(account.name)") {
+            return nil
+        }
+        return try await secretValue(of: account)
+    }
+
+    /// Puts the text of a secret account in the clipboard, after the user authenticates when the
+    /// account asks for it, marked
+    /// concealed, and empties the clipboard after 30 seconds, or when the app quits, if it still holds
+    /// that copy. Nothing is copied when the user cancels.
     func copySecret(of account: Account) async throws {
+        if account.requiresAuthentication, try await !authenticated(for: "copy the secret \(account.name)") {
+            return
+        }
         let value = try await secretValue(of: account)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(value, forType: .string)
         pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
-        let copy = pasteboard.changeCount
+        copiedSecret = pasteboard.changeCount
         Task {
             try? await Task.sleep(for: .seconds(30))
-            if pasteboard.changeCount == copy {
-                pasteboard.clearContents()
-            }
+            clearCopiedSecret()
         }
+    }
+
+    /// Empties the clipboard if it still holds the secret copied last.
+    private func clearCopiedSecret() {
+        let pasteboard = NSPasteboard.general
+        if let copiedSecret, pasteboard.changeCount == copiedSecret {
+            pasteboard.clearContents()
+        }
+        copiedSecret = nil
     }
 
     /// Puts the account's current code in the clipboard: a code computed from the secret, which
@@ -473,6 +542,11 @@ final class AccountStore {
 
     /// Why a Vault account has no code: its vault failed, or is gone.
     func problem(of account: Account) -> VaultProblem? {
+        if brokenRecords.contains(account.id) {
+            return VaultProblem(kind: .other, title: "The secret's reference is missing",
+                                detail: "The stored record of this account holds no reference to a KV field.",
+                                suggestion: "Remove the account and add it again.")
+        }
         guard let profile = vaultProfile(of: account) else {
             return nil
         }
@@ -543,6 +617,19 @@ final class AccountStore {
     /// The registered accounts whose codes are shown: in an open window or beside the menu bar icon.
     private var shownIDs: Set<UUID> {
         openWindowIDs.union(menuBarAccountID.map { [$0] } ?? []).intersection(accounts.filter { $0.kind == .otp }.map(\.id))
+    }
+
+    /// The stored records of the accounts kept in Vault; none when none are stored. Records that
+    /// cannot be read are an error, so that nothing is saved over them.
+    private static func readVaultRecords() throws -> [VaultRecord] {
+        guard let data = UserDefaults.standard.data(forKey: "vaultProfileAccounts") else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([VaultRecord].self, from: data)
+        } catch {
+            throw StoreError.recordsUnreadable(error.localizedDescription)
+        }
     }
 
     private func saveVaultRecords() {

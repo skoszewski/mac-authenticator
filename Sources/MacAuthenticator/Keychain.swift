@@ -136,7 +136,9 @@ enum Keychain {
                   let name = item[kSecAttrLabel as String] as? String else {
                 return nil
             }
-            return Listed(account: Account(secretID: id, name: name),
+            // The generic attribute is `authenticate=0` or `authenticate=1`; an item without it asks.
+            let generic = (item[kSecAttrGeneric as String] as? Data).flatMap { String(data: $0, encoding: .utf8) }
+            return Listed(account: Account(secretID: id, name: name, requiresAuthentication: generic != "authenticate=0"),
                           created: item[kSecAttrCreationDate as String] as? Date ?? .distantPast)
         }
     }
@@ -155,14 +157,24 @@ enum Keychain {
     }
 
     /// Adds the secret account's item.
-    static func addSecret(id: UUID, name: String, value: String) throws {
+    static func addSecret(id: UUID, name: String, value: String, requiresAuthentication: Bool) throws {
         var attributes = secretQuery(id)
         attributes[kSecAttrLabel as String] = name
+        attributes[kSecAttrGeneric as String] = Data("authenticate=\(requiresAuthentication ? 1 : 0)".utf8)
         attributes[kSecAttrDescription as String] = secretItemDescription
         attributes[kSecValueData as String] = Data(value.utf8)
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw Failure(operation: "add the secret", status: status)
+        }
+    }
+
+    /// Sets whether showing or copying the secret account's secret asks the user to authenticate.
+    static func setSecretAuthentication(_ id: UUID, required: Bool) throws {
+        let attributes = [kSecAttrGeneric as String: Data("authenticate=\(required ? 1 : 0)".utf8)]
+        let status = SecItemUpdate(secretQuery(id) as CFDictionary, attributes as CFDictionary)
+        guard status == errSecSuccess else {
+            throw Failure(operation: "change the secret", status: status)
         }
     }
 

@@ -13,6 +13,15 @@ final class SettingsRouter {
 
     var tab = Tab.accounts
     var vault: UUID?
+    /// The secret a user chose to reveal, and its account; it is hidden when the window closes or
+    /// loses the keyboard.
+    var revealed: String?
+    var revealedID: UUID?
+
+    func hideSecret() {
+        revealed = nil
+        revealedID = nil
+    }
 }
 
 /// The Settings window, made on the first call and kept: an AppKit window hosting SwiftUI. The app
@@ -51,8 +60,13 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    /// Returns the app to the menu bar alone.
+    /// Hides a revealed secret and returns the app to the menu bar alone.
     func windowWillClose(_ notification: Notification) {
+        router.hideSecret()
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        router.hideSecret()
     }
 }

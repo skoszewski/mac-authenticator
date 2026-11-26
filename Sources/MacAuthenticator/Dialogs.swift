@@ -251,6 +251,7 @@ enum Dialogs {
                 for (value, label) in [(key, "Vault key"), (issuer, "Issuer"), (accountName, "Account name")] where value.isEmpty {
                     throw SessionError.missingSetting(label)
                 }
+                try store.checkCanAdd(named: "\(issuer): \(accountName)")
                 generated = try await session.authorized {
                     try await $0.generateKey(key, issuer: issuer, accountName: accountName)
                 }
@@ -304,6 +305,8 @@ enum Dialogs {
                     throw SessionError.missingSetting("Vault key")
                 }
                 let input = secretField.stringValue
+                let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+                try store.checkCanAdd(named: typed.isEmpty ? try Account.parse(name: key, input: input).account.name : typed)
                 try await session.authorized { try await $0.importKey(key, input: input) }
             } catch {
                 information = VaultProblem(error).report
@@ -327,7 +330,9 @@ enum Dialogs {
         nameField.placeholderString = "Name of the account"
         let secretField = NSSecureTextField()
         secretField.placeholderString = "The password or key to keep"
-        let stack = fieldStack([("Name", nameField), ("Secret", secretField)])
+        let authenticate = NSButton(checkboxWithTitle: "Ask to authenticate before it is shown or copied", target: nil, action: nil)
+        authenticate.state = .on
+        let stack = fieldStack([("Name", nameField), ("Secret", secretField), ("Authentication", authenticate)])
 
         var information = "The secret is kept in your login keychain."
         while true {
@@ -343,7 +348,8 @@ enum Dialogs {
                 return
             }
             do {
-                try store.addSecret(name: nameField.stringValue, value: secretField.stringValue)
+                try store.addSecret(name: nameField.stringValue, value: secretField.stringValue,
+                                    requiresAuthentication: authenticate.state == .on)
                 return
             } catch {
                 information = error.localizedDescription
@@ -372,6 +378,9 @@ enum Dialogs {
             rows.append(("Secret value", valueField))
         }
         rows.append(("Account name", nameField))
+        let authenticate = NSButton(checkboxWithTitle: "Ask to authenticate before it is shown or copied", target: nil, action: nil)
+        authenticate.state = .on
+        rows.append(("Authentication", authenticate))
         let stack = fieldStack(rows)
 
         var information = writing
@@ -391,12 +400,19 @@ enum Dialogs {
             }
             let session = picker.session
             let reference: SecretReference
+            let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            let accountName: String
             do {
                 reference = try picker.reference.validated()
+                accountName = typed.isEmpty ? "\(reference.name): \(reference.field)" : typed
+                try store.checkCanAdd(named: accountName)
                 if writing {
                     let value = valueField.stringValue
                     guard !value.isEmpty else {
                         throw StoreError.emptySecret
+                    }
+                    guard try await confirmWriting(reference, using: session) else {
+                        continue
                     }
                     try await session.authorized { try await $0.writeSecret(reference, value: value) }
                 } else {
@@ -408,16 +424,40 @@ enum Dialogs {
             }
 
             // A failure to add the account is reported, and the secret is not written again.
-            let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
             do {
-                try store.addVaultSecret(name: typed.isEmpty ? "\(reference.name): \(reference.field)" : typed,
-                                         reference: reference, profile: session.profile.id)
+                try store.addVaultSecret(name: accountName, reference: reference, profile: session.profile.id,
+                                         requiresAuthentication: authenticate.state == .on)
             } catch {
                 showError(writing ? "The secret was written in the vault but the account was not added"
                                   : "The account was not added", error.localizedDescription)
             }
             return
         }
+    }
+
+    /// Asks before a field that holds a value is replaced; true to go on. When the token cannot read
+    /// the field it cannot be told whether it holds a value, and that is asked as well.
+    private static func confirmWriting(_ reference: SecretReference, using session: VaultSession) async throws -> Bool {
+        let note: String
+        let button: String
+        do {
+            guard try await session.authorized({ try await $0.secretFieldExists(reference) }) else {
+                return true
+            }
+            note = "The field \(reference.field) of the secret \(reference.name) holds a value, which is replaced."
+            button = "Replace"
+        } catch let error as VaultError where error.isDenied {
+            note = "The vault does not let this token read the field, so it cannot be told whether the field holds a value. A value it holds is replaced."
+            button = "Write"
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Write the field \(reference.field)?"
+        alert.informativeText = note
+        alert.addButton(withTitle: button)
+        alert.addButton(withTitle: "Cancel")
+        activate()
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Warns that the address or the namespace of a vault changed, and asks whether the token of its
@@ -576,12 +616,18 @@ private final class VaultSecretPicker: NSObject, NSTextFieldDelegate {
         guard !mount.trimmingCharacters(in: CharacterSet(charactersIn: " /")).isEmpty else {
             return
         }
+        nameBox.placeholderString = "Name of the secret"
         listing = Task {
-            guard let names = try? await session.authorized({ try await $0.listSecrets(mount: mount, version: version) }),
-                  !Task.isCancelled else {
-                return
+            do {
+                let names = try await session.authorized { try await $0.listSecrets(mount: mount, version: version) }
+                if !Task.isCancelled {
+                    nameBox.addItems(withObjectValues: names)
+                }
+            } catch {
+                if !Task.isCancelled {
+                    nameBox.placeholderString = "Not listed: \(VaultProblem(error).title)"
+                }
             }
-            nameBox.addItems(withObjectValues: names)
         }
     }
 }

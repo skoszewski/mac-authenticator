@@ -21,6 +21,9 @@ public struct Account: Identifiable, Equatable, Sendable {
 
     public var id: UUID
     public var kind = Kind.otp
+    /// Whether showing or copying a secret account's secret asks the user to authenticate; nothing
+    /// reads it for an OTP account.
+    public var requiresAuthentication = true
     public var name: String
     public var issuer: String?
     public var algorithm: Algorithm
@@ -44,9 +47,10 @@ public struct Account: Identifiable, Equatable, Sendable {
     }
 
     /// A secret account.
-    public init(secretID id: UUID = UUID(), name: String) {
+    public init(secretID id: UUID = UUID(), name: String, requiresAuthentication: Bool = true) {
         self.id = id
         self.kind = .secret
+        self.requiresAuthentication = requiresAuthentication
         self.name = name
         self.issuer = nil
         self.algorithm = .sha1

@@ -170,10 +170,18 @@ with the other accounts, with a key symbol, and keeps its place in their order.
 **Secret...** in the **+** menu of the Accounts tab asks for a name and the secret, and keeps the
 secret in the login keychain. For a secret account the details pane shows, in place of a code:
 
-- **Reveal**, which shows the secret until **Hide** is chosen or another account is selected;
+- **Reveal**, which shows the secret until **Hide** is chosen, another account is selected, or the
+  Settings window loses the keyboard or closes;
 - **Copy Secret**, which puts the secret in the clipboard marked as concealed
   (`org.nspasteboard.ConcealedType`), so clipboard managers that honour it skip it, and empties the
-  clipboard after 30 seconds if it still holds that copy.
+  clipboard after 30 seconds, or when the app quits, if it still holds that copy.
+
+Each secret account has a setting, **Ask to authenticate before it is shown or copied**, which is
+on when the account is added unless it is unticked in the dialog, and can be changed in the details
+pane. When it is on, Reveal and Copy Secret, and Copy Secret in the menu, ask the user to
+authenticate first, with Touch ID, an Apple Watch or the password, as for macOS's own password
+items; cancelling the prompt does nothing. When it is off they act at once. An account without
+the setting, such as one kept by an earlier build, asks.
 
 A secret account has no window and cannot be shown beside the menu bar icon, so a secret is never
 drawn on the screen unasked.
@@ -228,7 +236,9 @@ The Vaults tab of the Settings window asks for:
 
 - the name of the vault, which must be unique;
 - the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for any
-  address, and then the credential and the codes cross the network unencrypted;
+  address, and then the credential and the codes cross the network unencrypted, which a yellow
+  warning triangle beside the field says when the mouse rests on it; an address that resolves to
+  this Mac has no warning;
 - the namespace, for Vault Enterprise; changing the address or the namespace of a saved OIDC vault
   that holds a token warns, and asks whether to keep the token, delete it or cancel the change;
 - the mount of the TOTP engine, `totp` by default;
@@ -348,7 +358,14 @@ the mount are listed to pick from when the policy allows listing, and a name can
 **Secret in Vault...** asks for the same, and for a value, which is set in the field; the secret is
 created when it does not exist, and its other fields are kept (a KV v2 secret is patched, and a KV
 v1 secret is read, changed and written back, so its fields of other types are kept too). The account
-is named as typed, or `<secret>: <field>`. Removing the account does not touch the secret in
+is named as typed, or `<secret>: <field>`. **Secret in Vault...** first refuses an account name
+that is taken, and asks before it replaces a field that holds a value, or that the token cannot
+read, so that cannot be told. The mount and the secret's name are names separated by single
+slashes, with no empty name and no name of dots; the characters of a name are escaped in the
+request. A KV v1 engine has no compare-and-set, so a written field is read back, and written again
+when another writer's write dropped it, which does not catch every race. A KV v2 secret whose latest
+version is deleted is reported as deleted, not as absent, and a failure to list the secrets is said
+in the secret name box. Removing the account does not touch the secret in
 the vault.
 
 ### What the Vault administrator prepares

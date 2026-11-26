@@ -78,6 +78,13 @@ public struct VaultProblem: Equatable, Sendable {
         case let .noSecret(name):
             return VaultProblem(kind: .server, title: "The secret does not exist", detail: "The vault holds no secret named \(name).",
                                 suggestion: "Check the KV version, the mount and the secret name.")
+        case let .secretDeleted(name):
+            return VaultProblem(kind: .server, title: "The secret was deleted", detail: "The latest version of the secret \(name) is deleted or destroyed.",
+                                suggestion: "Undelete the version in Vault, or choose another secret.")
+        case let .writeLost(name):
+            return VaultProblem(kind: .server, title: "The secret was changed by another writer",
+                                detail: "The field was not kept in \(name): another writer replaced the secret while it was written.",
+                                suggestion: "Try again.")
         case let .missingField(field, secret):
             return VaultProblem(kind: .other, title: "The secret has no such field", detail: "The secret \(secret) holds no field named \(field).",
                                 suggestion: "Check the name of the field.")
