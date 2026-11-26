@@ -721,6 +721,25 @@ private struct VaultProfileEditor: View {
                         .disabled(session.status == .signedOut && session.token == nil)
                     }
                 }
+            }
+            Section {
+                if let message {
+                    Text(message)
+                        .foregroundStyle(.red)
+                }
+                HStack {
+                    Spacer()
+                    Button("Revert") {
+                        draft = session.map { VaultProfileDraft($0.profile) } ?? VaultProfileDraft()
+                        message = nil
+                    }
+                    Button("Save") {
+                        save()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            Section("Connection") {
                 HStack {
                     Button("Test Connection") {
                         test()
@@ -740,23 +759,6 @@ private struct VaultProfileEditor: View {
                 }
                 ForEach(checks.indices, id: \.self) { index in
                     CheckRow(check: checks[index])
-                }
-            }
-            Section {
-                if let message {
-                    Text(message)
-                        .foregroundStyle(.red)
-                }
-                HStack {
-                    Spacer()
-                    Button("Revert") {
-                        draft = session.map { VaultProfileDraft($0.profile) } ?? VaultProfileDraft()
-                        message = nil
-                    }
-                    Button("Save") {
-                        save()
-                    }
-                    .keyboardShortcut(.defaultAction)
                 }
             }
         }

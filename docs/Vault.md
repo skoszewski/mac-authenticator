@@ -10,9 +10,10 @@ being fetched, the code window shows an empty code and a small dot in its bottom
 ## The Vaults tab
 
 **Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
-of each vault's authentication. **+** adds a vault and **-** removes the selected one. For the selected vault the
-page holds its settings and authentication, with its state, a start button and a stop button,
-and **Save** and **Revert** at the bottom. The words follow the method:
+of each vault's authentication. **+** adds a vault and **-** removes the selected one. For the
+selected vault the page holds its settings and authentication, with its state, a start button and a
+stop button, then **Save** and **Revert**, and below them a Connection group with **Test
+Connection** and **Vault Setup...**. The words follow the method:
 
 | Method | State | Start | Stop |
 |---|---|---|---|

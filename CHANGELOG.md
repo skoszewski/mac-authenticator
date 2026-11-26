@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4 - 2026-11-26 07:42:43 +0100
+
+fix: Test Connection and Vault Setup are in a group of their own below Save and Revert.
+
+- The page of a vault shows its settings and authentication, then Save and Revert, and then a
+  Connection group with Test Connection, Vault Setup and the steps of a test.
+
 ## 0.7.3 - 2026-11-26 07:36:09 +0100
 
 fix: a call to a vault shows that it is running and can be cancelled, in the menu bar, in Settings
