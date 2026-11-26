@@ -97,59 +97,31 @@ enum Dialogs {
         }
     }
 
-    /// Asks for a vault, one of the keys of its TOTP engine, and an account name until an account is
-    /// added or Cancel is chosen. The keys the policy lets the app list are offered; any name can be
-    /// typed.
+    /// Asks for a vault, one of the keys of its TOTP engine, and an account name, and adds the account.
+    /// The keys the policy lets the app list are offered, after the alert opens; any name can be typed.
     static func addFromVault(to store: AccountStore) async {
         let sessions = store.vaults
         guard !sessions.isEmpty else {
             showError("No vault is set up", "Accounts can be taken from a vault once one is set up.")
             return
         }
-        var keys: [UUID: [String]] = [:]
-        var notes: [String] = []
-        for session in sessions {
-            do {
-                keys[session.profile.id] = try await session.authorized { try await $0.listKeys() }
-            } catch {
-                keys[session.profile.id] = []
-                notes.append("\(session.profile.name): \(VaultProblem(error).title).")
-            }
-        }
-        let picker = VaultKeyPicker(sessions: sessions, keys: keys)
+        let picker = VaultKeyPicker(sessions: sessions)
         let nameField = NSTextField()
         nameField.placeholderString = "Empty to take it from the key"
         let stack = fieldStack([("Vault", picker.vaultPopUp), ("Key", picker.keyBox), ("Account name", nameField)])
 
-        var information = "Pick a key of the vault's TOTP engine, or type its name."
-        if !notes.isEmpty {
-            information += " The keys could not be listed: " + notes.joined(separator: " ")
-        }
-        while true {
-            let alert = NSAlert()
-            alert.messageText = "Add from Vault"
-            alert.informativeText = information
-            alert.accessoryView = stack
-            alert.addButton(withTitle: "Add")
-            alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = picker.keyBox
-            activate()
-            guard alert.runModal() == .alertFirstButtonReturn else {
-                return
-            }
-            let session = sessions[max(picker.vaultPopUp.indexOfSelectedItem, 0)]
+        let alert = BusyAlert(title: "Add from Vault", text: "Pick a key of the vault's TOTP engine, or type its name.",
+                              okTitle: "Add", accessory: stack, firstResponder: picker.keyBox) { busy in
             let key = picker.keyBox.stringValue.trimmingCharacters(in: .whitespaces)
-            do {
-                guard !key.isEmpty else {
-                    throw SessionError.missingSetting("Key")
-                }
-                try await addVaultAccount(of: key, named: nameField.stringValue.trimmingCharacters(in: .whitespaces),
-                                          to: store, using: session)
-                return
-            } catch {
-                information = VaultProblem(error).report
+            guard !key.isEmpty else {
+                throw SessionError.missingSetting("Key")
             }
+            busy.progress("Reading the key from the vault")
+            try await addVaultAccount(of: key, named: nameField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      to: store, using: picker.session)
+            return true
         }
+        _ = alert.run()
     }
 
     /// The labels over their fields, in a column.
@@ -167,7 +139,7 @@ enum Dialogs {
     /// Adds the account the vault key stores to the app; an empty name is the key's suggested name.
     private static func addVaultAccount(of key: String, named name: String, to store: AccountStore,
                                         using session: VaultSession) async throws {
-        let info = try await session.authorized { try await $0.readKey(key) }
+        let info = try await session.authorized("Reading the key") { try await $0.readKey(key) }
         try store.addVaultAccount(info.account(name: name.isEmpty ? info.suggestedName : name), key: key,
                                       profile: session.profile.id)
     }
@@ -215,8 +187,8 @@ enum Dialogs {
         return popUp
     }
 
-    /// Asks for the parameters of an account until the vault generates it in a key or Cancel is chosen,
-    /// shows its QR code, and adds the account to the app.
+    /// Asks for the parameters of an account, has the vault generate it in a key, shows its QR code, and
+    /// adds the account to the app.
     static func generateAccount(to store: AccountStore) async {
         guard let vaultPopUp = vaultPopUp(of: store) else {
             return
@@ -229,50 +201,44 @@ enum Dialogs {
         accountField.placeholderString = "For example your e-mail address"
         let stack = fieldStack([("Vault", vaultPopUp), ("Vault key", keyField), ("Issuer", issuerField), ("Account name", accountField)])
 
-        var information = "The vault makes the secret, keeps it in the key, and shows it once, to be scanned into another authenticator."
-        while true {
-            let alert = NSAlert()
-            alert.messageText = "Generate Account in Vault"
-            alert.informativeText = information
-            alert.accessoryView = stack
-            alert.addButton(withTitle: "Generate")
-            alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = keyField
-            activate()
-            guard alert.runModal() == .alertFirstButtonReturn else {
-                return
-            }
+        var generated: GeneratedKey?
+        var generatedIn: VaultSession?
+        let alert = BusyAlert(title: "Generate Account in Vault",
+                              text: "The vault makes the secret, keeps it in the key, and shows it once, to be scanned into another authenticator.",
+                              okTitle: "Generate", accessory: stack, firstResponder: keyField) { busy in
             let session = store.vaults[max(vaultPopUp.indexOfSelectedItem, 0)]
             let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
             let issuer = issuerField.stringValue.trimmingCharacters(in: .whitespaces)
             let accountName = accountField.stringValue.trimmingCharacters(in: .whitespaces)
-            let generated: GeneratedKey
-            do {
-                for (value, label) in [(key, "Vault key"), (issuer, "Issuer"), (accountName, "Account name")] where value.isEmpty {
-                    throw SessionError.missingSetting(label)
-                }
-                try store.checkCanAdd(named: "\(issuer): \(accountName)")
-                generated = try await session.authorized {
-                    try await $0.generateKey(key, issuer: issuer, accountName: accountName)
-                }
-            } catch {
-                information = VaultProblem(error).report
-                continue
+            for (value, label) in [(key, "Vault key"), (issuer, "Issuer"), (accountName, "Account name")] where value.isEmpty {
+                throw SessionError.missingSetting(label)
             }
-
-            // A failure to add the account is reported, and the key is not generated again.
-            showGeneratedKey(generated)
-            do {
-                try await addVaultAccount(of: key, named: "", to: store, using: session)
-            } catch {
-                showError("The account was generated in the vault but not added", error.localizedDescription)
+            try store.checkCanAdd(named: "\(issuer): \(accountName)")
+            busy.progress("Generating the key in the vault")
+            generated = try await session.authorized("Generating the key") {
+                try await $0.generateKey(key, issuer: issuer, accountName: accountName)
             }
+            generatedIn = session
+            return true
+        }
+        guard alert.run(), let generated, let session = generatedIn else {
             return
+        }
+
+        // A failure to add the account is reported, and the key is not generated again.
+        showGeneratedKey(generated)
+        do {
+            try await addVaultAccount(of: keyField.stringValue.trimmingCharacters(in: .whitespaces), named: "", to: store,
+                                      using: session)
+        } catch is CancellationError {
+            showError("The account was generated in the vault but not added", "The request was cancelled.")
+        } catch {
+            showError("The account was generated in the vault but not added", error.localizedDescription)
         }
     }
 
-    /// Asks for a key name and a base32 secret or otpauth URI until the vault stores the account in the
-    /// key or Cancel is chosen, and adds the account to the app.
+    /// Asks for a key name and a base32 secret or otpauth URI, has the vault store the account in the
+    /// key, and adds the account to the app.
     static func importAccount(to store: AccountStore) async {
         guard let vaultPopUp = vaultPopUp(of: store) else {
             return
@@ -285,42 +251,36 @@ enum Dialogs {
         nameField.placeholderString = "Empty to take it from the key"
         let stack = fieldStack([("Vault", vaultPopUp), ("Vault key", keyField), ("Secret or otpauth URI", secretField), ("Account name", nameField)])
 
-        var information = "The vault keeps the secret in the key; it supports SHA1, SHA256 and SHA512 with 6 or 8 digits."
-        while true {
-            let alert = NSAlert()
-            alert.messageText = "Import Account into Vault"
-            alert.informativeText = information
-            alert.accessoryView = stack
-            alert.addButton(withTitle: "Import")
-            alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = keyField
-            activate()
-            guard alert.runModal() == .alertFirstButtonReturn else {
-                return
-            }
+        var importedIn: VaultSession?
+        let alert = BusyAlert(title: "Import Account into Vault",
+                              text: "The vault keeps the secret in the key; it supports SHA1, SHA256 and SHA512 with 6 or 8 digits.",
+                              okTitle: "Import", accessory: stack, firstResponder: keyField) { busy in
             let session = store.vaults[max(vaultPopUp.indexOfSelectedItem, 0)]
             let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
-            do {
-                guard !key.isEmpty else {
-                    throw SessionError.missingSetting("Vault key")
-                }
-                let input = secretField.stringValue
-                let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-                try store.checkCanAdd(named: typed.isEmpty ? try Account.parse(name: key, input: input).account.name : typed)
-                try await session.authorized { try await $0.importKey(key, input: input) }
-            } catch {
-                information = VaultProblem(error).report
-                continue
+            guard !key.isEmpty else {
+                throw SessionError.missingSetting("Vault key")
             }
-
-            // A failure to add the account is reported, and the key is not imported again.
-            do {
-                try await addVaultAccount(of: key, named: nameField.stringValue.trimmingCharacters(in: .whitespaces),
-                                          to: store, using: session)
-            } catch {
-                showError("The account was imported into the vault but not added", error.localizedDescription)
-            }
+            let input = secretField.stringValue
+            let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            try store.checkCanAdd(named: typed.isEmpty ? try Account.parse(name: key, input: input).account.name : typed)
+            busy.progress("Importing the key into the vault")
+            try await session.authorized("Importing the key") { try await $0.importKey(key, input: input) }
+            importedIn = session
+            return true
+        }
+        guard alert.run(), let session = importedIn else {
             return
+        }
+
+        // A failure to add the account is reported, and the key is not imported again.
+        do {
+            try await addVaultAccount(of: keyField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      named: nameField.stringValue.trimmingCharacters(in: .whitespaces),
+                                      to: store, using: session)
+        } catch is CancellationError {
+            showError("The account was imported into the vault but not added", "The request was cancelled.")
+        } catch {
+            showError("The account was imported into the vault but not added", error.localizedDescription)
         }
     }
 
@@ -357,9 +317,10 @@ enum Dialogs {
         }
     }
 
-    /// Asks for the vault, the KV version, the mount, the secret and the field until a secret account
-    /// reading that field is added or Cancel is chosen. When writing, it also asks for the value, which
-    /// is set in the field first; the vault's other fields of the secret are kept.
+    /// Asks for the vault, the KV version, the mount, the secret and the field, and adds a secret account
+    /// reading that field. When writing, it also asks for the value, which is set in the field first; the
+    /// vault's other fields of the secret are kept, and a field that holds a value is replaced only after
+    /// the alert says so and the button is pressed again.
     static func addVaultSecret(to store: AccountStore, writing: Bool) async {
         guard !store.vaults.isEmpty else {
             showError("No vault is set up", "Accounts can be taken from a vault once one is set up.")
@@ -383,81 +344,60 @@ enum Dialogs {
         rows.append(("Authentication", authenticate))
         let stack = fieldStack(rows)
 
-        var information = writing
-            ? "The field is set in the vault's secret, which is created when it does not exist; its other fields are kept."
-            : "Pick a secret of the mount, or type its name, and name the field to read."
-        while true {
-            let alert = NSAlert()
-            alert.messageText = writing ? "Add Secret in Vault" : "Add Secret from Vault"
-            alert.informativeText = information
-            alert.accessoryView = stack
-            alert.addButton(withTitle: "Add")
-            alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = picker.mountField
-            activate()
-            guard alert.runModal() == .alertFirstButtonReturn else {
-                return
-            }
+        var confirmed: SecretReference?
+        var addFailure: String?
+        let alert = BusyAlert(
+            title: writing ? "Add Secret in Vault" : "Add Secret from Vault",
+            text: writing
+                ? "The field is set in the vault's secret, which is created when it does not exist; its other fields are kept."
+                : "Pick a secret of the mount, or type its name, and name the field to read.",
+            okTitle: "Add", accessory: stack, firstResponder: picker.mountField
+        ) { busy in
             let session = picker.session
-            let reference: SecretReference
+            let reference = try picker.reference.validated()
             let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-            let accountName: String
-            do {
-                reference = try picker.reference.validated()
-                accountName = typed.isEmpty ? "\(reference.name): \(reference.field)" : typed
-                try store.checkCanAdd(named: accountName)
-                if writing {
-                    let value = valueField.stringValue
-                    guard !value.isEmpty else {
-                        throw StoreError.emptySecret
-                    }
-                    guard try await confirmWriting(reference, using: session) else {
-                        continue
-                    }
-                    try await session.authorized { try await $0.writeSecret(reference, value: value) }
-                } else {
-                    _ = try await session.authorized { try await $0.readSecret(reference) }
+            let accountName = typed.isEmpty ? "\(reference.name): \(reference.field)" : typed
+            try store.checkCanAdd(named: accountName)
+            if writing {
+                let value = valueField.stringValue
+                guard !value.isEmpty else {
+                    throw StoreError.emptySecret
                 }
-            } catch {
-                information = VaultProblem(error).report
-                continue
+                if confirmed != reference {
+                    busy.progress("Checking the field in the vault")
+                    do {
+                        if try await session.authorized("Checking the field", { try await $0.secretFieldExists(reference) }) {
+                            confirmed = reference
+                            busy.ask("The field \(reference.field) of the secret \(reference.name) holds a value, which is replaced. "
+                                     + "Press Replace to write it.", okTitle: "Replace")
+                            return false
+                        }
+                    } catch let error as VaultError where error.isDenied {
+                        confirmed = reference
+                        busy.ask("The vault does not let this token read the field, so it cannot be told whether the field holds a "
+                                 + "value. A value it holds is replaced. Press Write to write it.", okTitle: "Write")
+                        return false
+                    }
+                }
+                busy.progress("Writing the secret in the vault")
+                try await session.authorized("Writing the secret") { try await $0.writeSecret(reference, value: value) }
+            } else {
+                busy.progress("Reading the secret from the vault")
+                _ = try await session.authorized("Reading the secret") { try await $0.readSecret(reference) }
             }
-
             // A failure to add the account is reported, and the secret is not written again.
             do {
                 try store.addVaultSecret(name: accountName, reference: reference, profile: session.profile.id,
                                          requiresAuthentication: authenticate.state == .on)
             } catch {
-                showError(writing ? "The secret was written in the vault but the account was not added"
-                                  : "The account was not added", error.localizedDescription)
+                addFailure = error.localizedDescription
             }
-            return
+            return true
         }
-    }
-
-    /// Asks before a field that holds a value is replaced; true to go on. When the token cannot read
-    /// the field it cannot be told whether it holds a value, and that is asked as well.
-    private static func confirmWriting(_ reference: SecretReference, using session: VaultSession) async throws -> Bool {
-        let note: String
-        let button: String
-        do {
-            guard try await session.authorized({ try await $0.secretFieldExists(reference) }) else {
-                return true
-            }
-            note = "The field \(reference.field) of the secret \(reference.name) holds a value, which is replaced."
-            button = "Replace"
-        } catch let error as VaultError where error.isDenied {
-            note = "The vault does not let this token read the field, so it cannot be told whether the field holds a value. A value it holds is replaced."
-            button = "Write"
+        if alert.run(), let addFailure {
+            showError(writing ? "The secret was written in the vault but the account was not added"
+                              : "The account was not added", addFailure)
         }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Write the field \(reference.field)?"
-        alert.informativeText = note
-        alert.addButton(withTitle: button)
-        alert.addButton(withTitle: "Cancel")
-        activate()
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Warns that the address or the namespace of a vault changed, and asks whether the token of its
@@ -535,18 +475,17 @@ enum Dialogs {
     }
 }
 
-/// The vault pop-up and key combo box of the Add from Vault alert; choosing another vault offers
-/// the keys listed for it.
+/// The vault pop-up and key combo box of the Add from Vault alert; the keys of the chosen vault are
+/// listed when the alert opens and when the vault changes, and offered, and any name can be typed.
 @MainActor
 private final class VaultKeyPicker: NSObject {
     let vaultPopUp = NSPopUpButton()
     let keyBox = NSComboBox()
     private let sessions: [VaultSession]
-    private let keys: [UUID: [String]]
+    private var listing: Task<Void, Never>?
 
-    init(sessions: [VaultSession], keys: [UUID: [String]]) {
+    init(sessions: [VaultSession]) {
         self.sessions = sessions
-        self.keys = keys
         super.init()
         vaultPopUp.addItems(withTitles: sessions.map(\.profile.name))
         vaultPopUp.target = self
@@ -554,10 +493,33 @@ private final class VaultKeyPicker: NSObject {
         vaultChanged()
     }
 
+    var session: VaultSession {
+        sessions[max(vaultPopUp.indexOfSelectedItem, 0)]
+    }
+
     @objc private func vaultChanged() {
+        listing?.cancel()
         keyBox.removeAllItems()
         keyBox.stringValue = ""
-        keyBox.addItems(withObjectValues: keys[sessions[max(vaultPopUp.indexOfSelectedItem, 0)].profile.id] ?? [])
+        keyBox.placeholderString = "Listing the keys..."
+        let session = session
+        listing = Task {
+            do {
+                let keys = try await session.authorized("Listing the keys") { try await $0.listKeys() }
+                if !Task.isCancelled {
+                    keyBox.addItems(withObjectValues: keys)
+                    keyBox.placeholderString = "Name of the key"
+                }
+            } catch is CancellationError {
+                if !Task.isCancelled {
+                    keyBox.placeholderString = "Not listed: cancelled"
+                }
+            } catch {
+                if !Task.isCancelled {
+                    keyBox.placeholderString = "Not listed: \(VaultProblem(error).title)"
+                }
+            }
+        }
     }
 }
 
@@ -616,18 +578,143 @@ private final class VaultSecretPicker: NSObject, NSTextFieldDelegate {
         guard !mount.trimmingCharacters(in: CharacterSet(charactersIn: " /")).isEmpty else {
             return
         }
-        nameBox.placeholderString = "Name of the secret"
+        nameBox.placeholderString = "Listing the secrets..."
         listing = Task {
             do {
-                let names = try await session.authorized { try await $0.listSecrets(mount: mount, version: version) }
+                let names = try await session.authorized("Listing the secrets") {
+                    try await $0.listSecrets(mount: mount, version: version)
+                }
                 if !Task.isCancelled {
                     nameBox.addItems(withObjectValues: names)
+                    nameBox.placeholderString = "Name of the secret"
+                }
+            } catch is CancellationError {
+                if !Task.isCancelled {
+                    nameBox.placeholderString = "Not listed: cancelled"
                 }
             } catch {
                 if !Task.isCancelled {
                     nameBox.placeholderString = "Not listed: \(VaultProblem(error).title)"
                 }
             }
+        }
+    }
+}
+
+/// An alert whose first button runs a call to the vault while the alert stays open: the button is
+/// disabled, the second button becomes Cancel Request, and a spinner with a line says what is done. The
+/// alert closes when the action is done, shows an error in its text and stays open when the action
+/// fails, and the second button closes it when nothing runs.
+@MainActor
+private final class BusyAlert: NSObject {
+    private let alert = NSAlert()
+    private let accessory: NSStackView
+    private let progressRow: NSStackView
+    private let progressLabel = NSTextField(labelWithString: "")
+    private let spinner = NSProgressIndicator()
+    private let idleText: String
+    private var idleTitle: String
+    private let action: (BusyAlert) async throws -> Bool
+    private var task: Task<Void, Never>?
+
+    /// The action returns true when it is done, which closes the alert, and false to leave it open.
+    init(title: String, text: String, okTitle: String, accessory: NSStackView, firstResponder: NSView?,
+         action: @escaping (BusyAlert) async throws -> Bool) {
+        self.accessory = accessory
+        self.idleText = text
+        self.idleTitle = okTitle
+        self.action = action
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        progressRow = NSStackView(views: [spinner, progressLabel])
+        progressRow.orientation = .horizontal
+        progressRow.isHidden = true
+        super.init()
+        accessory.addArrangedSubview(progressRow)
+        alert.messageText = title
+        alert.informativeText = text
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: okTitle)
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].target = self
+        alert.buttons[0].action = #selector(okPressed)
+        alert.buttons[1].target = self
+        alert.buttons[1].action = #selector(cancelPressed)
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = firstResponder
+        relayout()
+    }
+
+    /// Shows the alert; true when the action was done.
+    func run() -> Bool {
+        Dialogs.activate()
+        let done = alert.runModal() == .alertFirstButtonReturn
+        alert.window.orderOut(nil)
+        return done
+    }
+
+    /// Says what the action is doing now.
+    func progress(_ text: String) {
+        progressLabel.stringValue = text + "..."
+    }
+
+    /// Leaves the alert open with a question that the first button, retitled, answers.
+    func ask(_ text: String, okTitle: String) {
+        alert.informativeText = text
+        idleTitle = okTitle
+    }
+
+    private func setBusy(_ busy: Bool) {
+        alert.buttons[0].isEnabled = !busy
+        alert.buttons[0].title = idleTitle
+        alert.buttons[1].title = busy ? "Cancel Request" : "Cancel"
+        progressRow.isHidden = !busy
+        if busy {
+            spinner.startAnimation(nil)
+        } else {
+            spinner.stopAnimation(nil)
+        }
+        relayout()
+    }
+
+    private func relayout() {
+        accessory.setFrameSize(accessory.fittingSize)
+        alert.layout()
+    }
+
+    @objc private func okPressed() {
+        guard task == nil else {
+            return
+        }
+        progress("Contacting the vault")
+        setBusy(true)
+        task = Task {
+            do {
+                let done = try await action(self)
+                task = nil
+                if done {
+                    NSApp.stopModal(withCode: .alertFirstButtonReturn)
+                } else {
+                    setBusy(false)
+                }
+            } catch is CancellationError {
+                task = nil
+                alert.informativeText = idleText
+                setBusy(false)
+            } catch {
+                task = nil
+                alert.informativeText = VaultProblem(error).report
+                setBusy(false)
+            }
+        }
+    }
+
+    @objc private func cancelPressed() {
+        if let task {
+            task.cancel()
+        } else {
+            NSApp.stopModal(withCode: .alertSecondButtonReturn)
         }
     }
 }

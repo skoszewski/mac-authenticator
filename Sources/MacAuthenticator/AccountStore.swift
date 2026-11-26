@@ -412,7 +412,7 @@ final class AccountStore {
             throw StoreError.profileRemoved
         }
         let reference = vaultSecret.reference
-        return try await session.authorized { try await $0.readSecret(reference) }
+        return try await session.authorized("Reading the secret") { try await $0.readSecret(reference) }
     }
 
     /// Sets whether showing or copying a secret account's secret asks the user to authenticate.
@@ -464,6 +464,7 @@ final class AccountStore {
         pasteboard.setString(value, forType: .string)
         pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
         copiedSecret = pasteboard.changeCount
+        showNotice("Copied the secret \(account.name)")
         Task {
             try? await Task.sleep(for: .seconds(30))
             clearCopiedSecret()
@@ -488,7 +489,7 @@ final class AccountStore {
                 throw StoreError.profileRemoved
             }
             let key = vaultKey.key
-            code = try await session.authorized { try await $0.code(key: key) }
+            code = try await session.authorized("Fetching the code") { try await $0.code(key: key) }
         } else {
             let secret = try secrets[account.id] ?? Keychain.secret(of: account.id)
             code = account.code(secret: secret, at: Date())
@@ -496,6 +497,7 @@ final class AccountStore {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(code, forType: .string)
+        showNotice("Copied the code of \(account.name)")
     }
 
     /// Fetches the codes of the shown Vault accounts that have none for the present period. A
@@ -520,7 +522,7 @@ final class AccountStore {
                     vaultFetching.remove(id)
                 }
                 do {
-                    let code = try await session.authorized { try await $0.code(key: key) }
+                    let code = try await session.authorized("Fetching the code", quiet: true) { try await $0.code(key: key) }
                     vaultCodes[id] = VaultCode(code: code, counter: counter)
                 } catch {
                     // The session records the problem.
@@ -612,6 +614,44 @@ final class AccountStore {
             }
         }
         refreshVaultCodes()
+    }
+
+    /// The vault call that is running and shown, with its vault.
+    var activity: (session: VaultSession, operation: VaultSession.Operation)? {
+        for session in vaults {
+            if let operation = session.activity {
+                return (session, operation)
+            }
+        }
+        return nil
+    }
+
+    /// Whether a shown vault call is running.
+    var isBusy: Bool {
+        activity != nil
+    }
+
+    func cancelActivity() {
+        for session in vaults {
+            session.cancelOperations()
+        }
+    }
+
+    /// A short message about what just worked, shown for 2 seconds.
+    struct Notice: Equatable {
+        let text: String
+        let until: Date
+    }
+
+    private(set) var notice: Notice?
+
+    /// The notice while it is shown.
+    var currentNotice: Notice? {
+        notice.flatMap { $0.until > now ? $0 : nil }
+    }
+
+    private func showNotice(_ text: String) {
+        notice = Notice(text: text, until: Date().addingTimeInterval(2))
     }
 
     /// The registered accounts whose codes are shown: in an open window or beside the menu bar icon.

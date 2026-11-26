@@ -353,3 +353,22 @@ The checks that need no write are made first: the account name is free, and the 
 hold a value or not, which the user is asked about, so that a refusal does not leave a secret changed
 in Vault and no account for it. A mount and a secret's name are names separated by single slashes,
 each escaped for the URL, with no empty name and no name of dots, which would reach another path.
+
+## A call to a vault is tracked in the session, shown in four places, and cancellable
+
+Every call to a vault passes through `VaultSession.authorized`, which records it, with a label that
+says what it does, and runs it as a task that can be cancelled. The menu bar icon, the status bar of
+the Settings window, the Accounts list and the alerts read that record, so no dialog keeps a spinner
+of its own, and a call started from anywhere shows everywhere. A call is shown 300 ms after it starts,
+since a quick call that flashes a spinner looks like a fault, and the background fetch of codes is
+never shown, since it runs every period and a code window has its dot. A cancelled call throws
+`CancellationError`, sets no status and reports no problem; the callers say nothing for it.
+
+An alert that calls a vault stays open while it runs, with its first button disabled and the second
+one cancelling the request, instead of closing and opening again: the user keeps what was typed, an
+error appears where the user is looking, and an alert that vanished does not look like a fault. The
+question before an overwrite is asked in the same alert, by retitling its first button, since a second
+modal alert would nest inside the one that waits. The bar at the bottom of the Settings window is
+always there with a fixed height, so the window does not move when it fills. The 60 second timeout of
+URLSession is kept; the wait and a Cancel button are shown instead of a shorter timeout, which would
+fail slow but working vaults.

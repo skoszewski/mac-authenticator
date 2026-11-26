@@ -39,6 +39,11 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(systemName: "lock.shield")
+        if store.isBusy {
+            Image(systemName: "arrow.triangle.2.circlepath")
+        } else if store.currentNotice != nil {
+            Image(systemName: "checkmark.circle.fill")
+        }
         if !store.problems.isEmpty {
             Image(systemName: "exclamationmark.triangle.fill")
         }
@@ -82,6 +87,7 @@ struct MenuContent: View {
                                 Task {
                                     do {
                                         try await store.copySecret(of: account)
+                                    } catch is CancellationError {
                                     } catch {
                                         Dialogs.showProblem("The secret was not copied", error)
                                     }
@@ -94,6 +100,7 @@ struct MenuContent: View {
                                 Task {
                                     do {
                                         try await store.copyCode(of: account)
+                                    } catch is CancellationError {
                                     } catch {
                                         Dialogs.showProblem("The code was not copied", error)
                                     }

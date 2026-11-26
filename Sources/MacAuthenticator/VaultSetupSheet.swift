@@ -15,6 +15,7 @@ struct VaultSetupSheet: View {
     @State private var checks: [VaultCheck] = []
     @State private var running = false
     @State private var finished = false
+    @State private var setupTask: Task<Void, Never>?
 
     init(draft: VaultProfileDraft, session: VaultSession?) {
         self.draft = draft
@@ -30,14 +31,14 @@ struct VaultSetupSheet: View {
         options.kv = kvEnabled ? kv : nil
         options.kv1 = kv1Enabled ? kv1 : nil
         let setup = options
-        Task {
+        setupTask = Task {
             do {
                 let configuration = try draft.configuration()
                 if configuration.authMethod == .oidc {
                     guard let session else {
                         throw VaultError.notSignedIn
                     }
-                    checks = try await session.authorized { await VaultSetup.run(client: $0, options: setup) }
+                    checks = try await session.authorized("Running the setup") { await VaultSetup.run(client: $0, options: setup) }
                 } else {
                     let credential = draft.credential.isEmpty
                         ? try session.flatMap { try Keychain.vaultCredential(of: $0.profile.id) } : draft.credential
@@ -47,12 +48,15 @@ struct VaultSetupSheet: View {
                     checks = await VaultSetup.run(client: VaultClient(configuration: configuration, token: token.token),
                                                   options: setup)
                 }
+            } catch is CancellationError {
+                checks = [VaultCheck(step: "Setup", outcome: .skipped, message: "Cancelled.", problem: nil)]
             } catch {
                 checks = [VaultCheck(step: "Authentication", outcome: .failed, message: "The setup was not started.",
                                      problem: VaultProblem(error, method: draft.method))]
             }
             running = false
             finished = true
+            setupTask = nil
         }
     }
 
@@ -143,8 +147,12 @@ struct VaultSetupSheet: View {
             Section {
                 HStack {
                     Spacer()
-                    Button(finished ? "Close" : "Cancel", role: .cancel) {
-                        dismiss()
+                    Button(running ? "Cancel Request" : finished ? "Close" : "Cancel", role: .cancel) {
+                        if running {
+                            setupTask?.cancel()
+                        } else {
+                            dismiss()
+                        }
                     }
                     Button(finished ? "Run Again" : "Run") {
                         run()

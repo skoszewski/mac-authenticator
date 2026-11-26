@@ -63,6 +63,16 @@ final class VaultSession {
         case failed(VaultProblem)
     }
 
+    /// A call to the vault that is running, as the indicators show it: it becomes visible 300 ms after
+    /// it starts, so that quick calls cause no flicker; a quiet one is never shown.
+    struct Operation: Identifiable, Equatable {
+        let id = UUID()
+        var label: String
+        var quiet: Bool
+        var since = Date()
+        var visible = false
+    }
+
     private static let log = Logger(subsystem: "pl.waw.koszewscy.MacAuthenticator", category: "vault")
 
     private(set) var profile: VaultProfile
@@ -73,6 +83,8 @@ final class VaultSession {
     @ObservationIgnored var onProblem: ((VaultSession, VaultProblem) -> Void)?
     @ObservationIgnored private var worked = false
     private(set) var token: VaultToken?
+    private(set) var operations: [Operation] = []
+    @ObservationIgnored private var cancellers: [UUID: () -> Void] = [:]
     @ObservationIgnored private var signInTask: Task<Void, Error>?
     @ObservationIgnored private var signInWindow: OIDCSignInWindow?
 
@@ -89,6 +101,18 @@ final class VaultSession {
 
     var configuration: VaultConfiguration {
         profile.configuration
+    }
+
+    /// The newest running call that is shown.
+    var activity: Operation? {
+        operations.last { $0.visible && !$0.quiet }
+    }
+
+    /// Cancels the running calls; each caller gets a `CancellationError`.
+    func cancelOperations() {
+        for cancel in cancellers.values {
+            cancel()
+        }
     }
 
     /// The status of a held token: signed in while it has not ended.
@@ -280,13 +304,38 @@ final class VaultSession {
         return token
     }
 
-    /// Runs a call with a valid token, and records its outcome in the status.
-    func authorized<T: Sendable>(_ call: @Sendable (VaultClient) async throws -> T) async throws -> T {
+    /// Runs a call with a valid token, and records its outcome in the status. The label says what
+    /// the call does, for the indicators; a cancelled call throws `CancellationError` and changes no
+    /// status.
+    func authorized<T: Sendable>(_ label: String, quiet: Bool = false,
+                                 _ call: @escaping @Sendable (VaultClient) async throws -> T) async throws -> T {
+        let operation = Operation(label: label, quiet: quiet)
+        let id = operation.id
+        operations.append(operation)
+        let task = Task { try await perform(call) }
+        cancellers[id] = { task.cancel() }
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            if let index = operations.firstIndex(where: { $0.id == id }) {
+                operations[index].visible = true
+            }
+        }
+        defer {
+            operations.removeAll { $0.id == id }
+            cancellers[id] = nil
+        }
         do {
-            let result = try await perform(call)
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
             succeeded()
             return result
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
             report(error)
             throw error
         }

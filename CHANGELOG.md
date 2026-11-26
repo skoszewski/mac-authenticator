@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.3 - 2026-11-26 07:36:09 +0100
+
+fix: a call to a vault shows that it is running and can be cancelled, in the menu bar, in Settings
+and in the alerts, and the README is split into docs.
+
+- The menu bar icon shows circular arrows while a call to a vault runs, and a checkmark for about 2
+  seconds after a code or a secret was copied.
+- The Settings window has a bar at the bottom that says what is waited for and for how long, with a
+  Cancel button, and shows what was copied; the accounts of a busy vault show a spinner, and their
+  Copy and Reveal buttons are disabled until it ends.
+- The alerts that call a vault stay open while the call runs, with a spinner and a Cancel Request
+  button, and show an error in the alert with what was typed kept. Secret in Vault asks before it
+  replaces a field in the same alert. The keys and secrets offered are listed after the alert opens.
+- Test Connection and Vault Setup can be cancelled while they run.
+- The README opens with what the app is for in two sentences, and links to three new guides:
+  docs/Usage.md, with the menu, the Settings window, adding accounts, secret accounts and the
+  keychain; docs/Vault.md, with everything about Vault; and docs/Development.md, with the
+  requirements, building, testing, signing, the app icon and releasing. The README keeps the
+  installation.
+
 ## 0.7.2 - 2026-11-26 07:10:53 +0100
 
 fix: a secret can ask the user to authenticate before it is shown or copied, Vault accounts are not

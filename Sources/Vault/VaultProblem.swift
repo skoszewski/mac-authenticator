@@ -132,6 +132,10 @@ public struct VaultProblem: Equatable, Sendable {
     private static func problem(of error: URLError) -> VaultProblem {
         let host = error.failingURL?.host ?? "the vault"
         switch error.code {
+        case .cancelled:
+            return VaultProblem(kind: .other, title: "The request was cancelled",
+                                detail: "The request to the vault was cancelled before it ended.",
+                                suggestion: "Run it again when you are ready.")
         case .cannotFindHost, .dnsLookupFailed:
             return VaultProblem(kind: .network, title: "The vault's name does not resolve",
                                 detail: "The name \(host) was not found.",

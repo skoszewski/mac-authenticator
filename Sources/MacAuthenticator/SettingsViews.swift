@@ -9,16 +9,52 @@ struct SettingsView: View {
     @Bindable var router: SettingsRouter
 
     var body: some View {
-        TabView(selection: $router.tab) {
-            Tab("Accounts", systemImage: "list.bullet", value: SettingsRouter.Tab.accounts) {
-                AccountsSettings(store: store, windows: windows, router: router)
+        VStack(spacing: 8) {
+            TabView(selection: $router.tab) {
+                Tab("Accounts", systemImage: "list.bullet", value: SettingsRouter.Tab.accounts) {
+                    AccountsSettings(store: store, windows: windows, router: router)
+                }
+                Tab("Vaults", systemImage: "lock.shield", value: SettingsRouter.Tab.vaults) {
+                    VaultSettings(store: store, windows: windows, router: router)
+                }
             }
-            Tab("Vaults", systemImage: "lock.shield", value: SettingsRouter.Tab.vaults) {
-                VaultSettings(store: store, windows: windows, router: router)
-            }
+            ActivityBar(store: store)
         }
         .scenePadding()
-        .frame(minWidth: 700, minHeight: 460)
+        .frame(minWidth: 700, minHeight: 480)
+    }
+}
+
+/// The bar under the tabs: what the app waits for from a vault, with a Cancel button, how long it has
+/// waited once that is a while, or the notice of what just worked; empty otherwise.
+private struct ActivityBar: View {
+    let store: AccountStore
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let activity = store.activity {
+                ProgressView()
+                    .controlSize(.small)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let waited = Int(context.date.timeIntervalSince(activity.operation.since))
+                    Text("\(activity.session.profile.name): \(activity.operation.label)..."
+                         + (waited >= 5 ? " Still waiting, \(waited) s." : ""))
+                }
+                Spacer()
+                Button("Cancel") {
+                    store.cancelActivity()
+                }
+            } else if let notice = store.currentNotice {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(notice.text)
+                Spacer()
+            } else {
+                Spacer()
+            }
+        }
+        .font(.callout)
+        .frame(height: 24)
     }
 }
 
@@ -62,6 +98,10 @@ struct AccountsSettings: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        if store.vaultProfile(of: account).flatMap({ store.vault(for: $0) })?.activity != nil {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                         if store.problem(of: account) != nil {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.yellow)
@@ -152,6 +192,11 @@ private struct AccountDetails: View {
     let account: Account
     let source: String
 
+    /// Whether the account's vault has a call running, which disables the actions that make one.
+    private var vaultBusy: Bool {
+        store.vaultProfile(of: account).flatMap { store.vault(for: $0) }?.activity != nil
+    }
+
     var body: some View {
         Form {
             if let problem = store.problem(of: account) {
@@ -215,20 +260,24 @@ private struct AccountDetails: View {
                                         router.revealed = value
                                         router.revealedID = account.id
                                     }
+                                } catch is CancellationError {
                                 } catch {
                                     Dialogs.showProblem("The secret was not read", error)
                                 }
                             }
                         }
+                        .disabled(vaultBusy && revealed == nil)
                         Button("Copy Secret") {
                             Task {
                                 do {
                                     try await store.copySecret(of: account)
+                                } catch is CancellationError {
                                 } catch {
                                     Dialogs.showProblem("The secret was not copied", error)
                                 }
                             }
                         }
+                        .disabled(vaultBusy)
                     }
                 }
             } else {
@@ -250,11 +299,13 @@ private struct AccountDetails: View {
                             Task {
                                 do {
                                     try await store.copyCode(of: account)
+                                } catch is CancellationError {
                                 } catch {
                                     Dialogs.showProblem("The code was not copied", error)
                                 }
                             }
                         }
+                        .disabled(vaultBusy)
                     }
                 }
             }
@@ -509,6 +560,7 @@ private struct VaultProfileEditor: View {
     @State private var message: String?
     @State private var checks: [VaultCheck] = []
     @State private var testing = false
+    @State private var testTask: Task<Void, Never>?
     @State private var plainHTTP = false
     @State private var showSetup = false
 
@@ -562,7 +614,7 @@ private struct VaultProfileEditor: View {
     private func test() {
         testing = true
         checks = []
-        Task {
+        testTask = Task {
             do {
                 let configuration = try draft.configuration()
                 let credential = draft.credential.isEmpty
@@ -573,7 +625,11 @@ private struct VaultProfileEditor: View {
                 checks = [VaultCheck(step: "Settings", outcome: .failed, message: "The settings cannot be tested.",
                                      problem: VaultProblem(error))]
             }
+            if Task.isCancelled {
+                checks = [VaultCheck(step: "Test Connection", outcome: .skipped, message: "Cancelled.", problem: nil)]
+            }
             testing = false
+            testTask = nil
         }
     }
 
@@ -677,6 +733,9 @@ private struct VaultProfileEditor: View {
                     if testing {
                         ProgressView()
                             .controlSize(.small)
+                        Button("Cancel") {
+                            testTask?.cancel()
+                        }
                     }
                 }
                 ForEach(checks.indices, id: \.self) { index in
